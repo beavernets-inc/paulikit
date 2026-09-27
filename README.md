@@ -328,8 +328,10 @@ Implemented and verified: the FWHT decomposition with optional
 compiled kernels (transform, coefficients, gather, Hermiticity check,
 labels, cache probe), sparsity-aware coefficients, streaming output
 with bounded memory, chunked and parallel execution with cache-aware
-auto-tuning, binary checkpoint/restart, and exhaustive verification to
-91,652,096 terms at 14 qubits.
+auto-tuning, binary checkpoint/restart (including CLI `--write-chunks`),
+opt-in CLI `--progress`, GNU-style CLI help, runtime-estimate guidance
+for hour-scale sparse runs, and exhaustive verification to 91,652,096
+terms at 14 qubits.
 
 Known gaps:
 

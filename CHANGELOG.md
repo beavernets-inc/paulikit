@@ -9,6 +9,32 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-27
+
+### Added
+
+- **CLI stream writer (`--write-chunks PATH`).** Main-drain-only PKCP
+  frames (symplectic `x`, `z`, `coeff`); workers never touch the file.
+  Alias `--checkpoint-path`. Without it, large CLI runs still count
+  and discard. Library: branchless null / checkpoint chunk sinks on
+  the drain path.
+- **CLI `--progress`.** Opt-in chunk progress on stderr (`k/N`,
+  percent, ETA); quiet drain loop free of per-chunk progress calls.
+  Parallel/stream paths pre-count planned chunks before the timed
+  drain so quiet and progress share the same warm-up.
+- **GNU-style CLI help.** Multi-line usage, wrapped description/epilog,
+  preserved author newlines, Examples on every subcommand; accurate
+  decompose vs library scope (demo Hamiltonian vs arbitrary operators).
+- **Runtime estimates doc.** `docs/runtime_estimates.md` — discard vs
+  write vs materialise; modest-HW topology (no CPU SKU); hour-line
+  ~$2\times 10^{11}$ terms ≈ $N\sim 1.1\times 10^{3}$ / ~20 qubits for
+  this oscillator family.
+
+### Changed
+
+- Tutorial / README / Sphinx links for writer, progress, and runtime
+  estimates; meson installs `cli_help.py`.
+
 ## [0.1.1] - 2026-09-26
 
 ### Changed
@@ -128,6 +154,7 @@ uploaded artifacts.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
 
-[Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.1.1...HEAD
+[Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.1.2...HEAD
+[0.1.2]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.2
 [0.1.1]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.1
 [0.1.0]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.0

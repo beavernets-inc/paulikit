@@ -58,7 +58,7 @@ keywords:
   - scientific Python
   - checkpoint and restart
 license: GPL-3.0-or-later
-version: 0.1.1
+version: 0.1.2
 # NOTE: no DOI yet. This is added on the first archived release
 # (Zenodo), and the version above must be bumped to match the tag that
 # is archived. A CITATION.cff claiming a version that was never
