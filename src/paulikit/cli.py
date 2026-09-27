@@ -61,11 +61,35 @@ def _default_masses(n_oscillators):
     return [1.0 + 0.05 * i for i in range(n_oscillators)]
 
 
+def _resolve_chunk_write_path(args):
+    """Resolve CLI stream-writer path (--write-chunks / --checkpoint-path).
+
+    Both flags name the same main-thread PKCP sink. Prefer
+    ``--write-chunks`` in new docs; ``--checkpoint-path`` remains as the
+    historical alias (and still enables crash/resume).
+    """
+    write = getattr(args, "write_chunks", None)
+    ckpt = getattr(args, "checkpoint_path", None)
+    if write is not None and ckpt is not None and write != ckpt:
+        print(
+            "paulikit: --write-chunks and --checkpoint-path must name "
+            "the same path when both are set "
+            f"(got {write!r} and {ckpt!r})",
+            file=sys.stderr,
+        )
+        return None, 1
+    return write or ckpt, 0
+
+
 def cmd_decompose(args):
     """Build a synthetic N-oscillator Hamiltonian and Pauli-decompose it."""
     n = args.n_oscillators
     spring_constants = _default_spring_constants(n)
     masses = _default_masses(n)
+
+    write_path, err = _resolve_chunk_write_path(args)
+    if err:
+        return err
 
     # --parallel builds the operator SPARSE. That is not an
     # optimisation detail: at 15 qubits a dense operator is 16 GiB and
@@ -79,6 +103,11 @@ def cmd_decompose(args):
 
     print(f"N={n} oscillators, {n_qubits} qubits, {padded.shape[0]}x{padded.shape[0]} "
           f"padded Hamiltonian")
+    if write_path is not None:
+        print(
+            f"Writing streamed chunks to {write_path} "
+            f"(symplectic x, z, coeff; resume-capable PKCP frames)"
+        )
 
     if getattr(args, "parallel", False):
         if not args.chunk_size:
@@ -95,7 +124,7 @@ def cmd_decompose(args):
             chunk_size=args.chunk_size,
             n_workers=args.n_workers,
             atol=args.atol,
-            checkpoint_path=args.checkpoint_path,
+            checkpoint_path=write_path,
             executor=args.executor,
             eager_threads=args.eager_threads,
         ):
@@ -135,7 +164,7 @@ def cmd_decompose(args):
             padded,
             chunk_size=args.chunk_size,
             atol=args.atol,
-            checkpoint_path=args.checkpoint_path,
+            checkpoint_path=write_path,
             parallel_labels=args.parallel_labels,
         ):
             n_chunks += 1
@@ -163,7 +192,7 @@ def cmd_decompose(args):
             sparse=True,
             chunk_size=args.chunk_size,
             atol=args.atol,
-            checkpoint_path=args.checkpoint_path,
+            checkpoint_path=write_path,
         )
         elapsed = time.perf_counter() - start
 
@@ -181,7 +210,7 @@ def cmd_decompose(args):
                 padded,
                 atol=args.atol,
                 chunk_size=args.chunk_size,
-                checkpoint_path=args.checkpoint_path,
+                checkpoint_path=write_path,
             )
             for label in sorted(terms):
                 print(f"  {label}: {terms[label]!r}")
@@ -192,7 +221,7 @@ def cmd_decompose(args):
         padded,
         atol=args.atol,
         chunk_size=args.chunk_size,
-        checkpoint_path=args.checkpoint_path,
+        checkpoint_path=write_path,
     )
     elapsed = time.perf_counter() - start
 
@@ -413,11 +442,22 @@ def build_parser():
              "while 8 cost 1.72x the cycles for no wall-clock gain.",
     )
     decompose_parser.add_argument(
-        "--checkpoint-path", type=str, default=None,
-        help="With --chunk-size set (streamed or not), checkpoint each "
-             "completed chunk's terms to this file so an interrupted run "
-             "can resume from where it left off on the next invocation "
-             "with the same path. Omit for no checkpointing (default).",
+        "--write-chunks", type=str, default=None, metavar="PATH",
+        help="Write each streamed chunk to PATH as binary PKCP frames "
+             "(symplectic x, z indices + complex coefficients). Writing "
+             "runs only on the main drain thread - workers never touch "
+             "the file. Without this flag (or --checkpoint-path), the "
+             "CLI counts terms and discards chunk arrays. Requires "
+             "--chunk-size on streamed/parallel paths. Same format as "
+             "--checkpoint-path (resume-capable); prefer this name when "
+             "you want a usable on-disk result. Read back with "
+             "paulikit.algorithms.fwht.iter_checkpoint_chunks.",
+    )
+    decompose_parser.add_argument(
+        "--checkpoint-path", type=str, default=None, metavar="PATH",
+        help="Alias for --write-chunks: write each completed chunk to "
+             "PATH so an interrupted run can resume with the same path. "
+             "Omit for no on-disk writer (default).",
     )
     decompose_parser.add_argument(
         "--no-eager-threads", dest="eager_threads", action="store_false",

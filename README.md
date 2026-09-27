@@ -30,9 +30,11 @@ time.
   respectively for the same three sizes.
 - **Exhaustive verification.** Every term is checked individually —
   not sampled — against an independently derived projection oracle.
-- **Checkpoint and restart.** A binary chunk-framed checkpoint cheap
-  enough to leave permanently enabled, so long decompositions survive
-  interruption.
+- **Checkpoint and restart / stream writer.** A binary chunk-framed
+  PKCP sink, cheap enough to leave enabled, written only from the main
+  drain thread. CLI: `--write-chunks PATH` (alias `--checkpoint-path`).
+  Without it, large CLI runs count and discard; with it, results stay
+  on disk as `(x, z, coeff)` frames readable via `iter_checkpoint_chunks`.
 - **Multi-core execution, in the shipped package.** Decomposition
   runs across multiple workers, selectable per call and from the
   command line: a thread pool that runs the compiled kernels
@@ -129,8 +131,17 @@ sizes a dense matrix cannot hold.
 paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
     --executor thread
 # optional: --n-workers N   # default = physical cores
+# optional: --write-chunks PATH   # persist streamed (x, z, coeff) frames
 ```
 
+Without `--write-chunks` (or its alias `--checkpoint-path`), the CLI
+**counts** terms and **discards** each chunk after the drain — fine for
+timing, not a usable archive. With `--write-chunks PATH`, the **main
+drain thread** appends binary PKCP frames (symplectic `x`/`z` plus
+`complex` coefficients); workers never touch the file. Read them back
+with `iter_checkpoint_chunks` (see below). Pauli-string labels are
+optional via `terms_from_arrays` on **subsets** — do not convert
+billions of terms to Python strings by default.
 **Dense fast path (library) — skip the sparsity scan.** Use when the
 operator is a full dense `ndarray` (e.g. random Hermitian). The CLI
 does not yet expose `assume_dense`; call the array API directly:
@@ -183,7 +194,28 @@ terms = fwht_pauli_terms(H_padded)  # {"IXI": -0.556..., "XII": -0.354..., ...}
 ```
 
 For large operators prefer `parallel_decompose_arrays` (see **Fastest
-paths** above) over collecting a full label dict.
+paths** above) over collecting a full label dict. To keep results on
+disk while streaming:
+
+```python
+from paulikit.algorithms.fwht import (
+    parallel_decompose_arrays,
+    iter_checkpoint_chunks,
+    terms_from_arrays,
+)
+
+path = "run.pkcp"
+for x, z, coeff in parallel_decompose_arrays(
+    H_padded, chunk_size=2, checkpoint_path=path, executor="thread",
+):
+    pass  # optional: filter / reduce per chunk here
+
+# Later (or in another process): one frame at a time
+for chunk_index, x, z, coeff in iter_checkpoint_chunks(path):
+    # symplectic form is usable as-is; labels only if needed:
+    # labels = terms_from_arrays(x[:10], z[:10], coeff[:10], n_qubits)
+    ...
+```
 
 
 ## Package layout

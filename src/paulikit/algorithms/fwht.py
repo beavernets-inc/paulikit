@@ -881,6 +881,104 @@ def _append_checkpoint_chunk(
     _append_progress_record(progress_path, next_chunk - 1)
 
 
+class NullChunkSink:
+    """No-op chunk sink used when the caller does not want on-disk output.
+
+    Drain loops always call ``write_*`` on a sink so the hot path stays
+    branchless with respect to ``checkpoint_path is not None``. Workers
+    never see this object: only the main-thread drain writes.
+    """
+
+    __slots__ = ()
+
+    def write_sequential_chunk(
+        self,
+        next_chunk: int,
+        x_out: NDArray[np.integer],
+        z_out: NDArray[np.integer],
+        coeff_out: NDArray[np.complexfloating],
+        idx_dtype: np.dtype,
+    ) -> None:
+        return None
+
+    def write_parallel_chunk(
+        self,
+        completed_chunk_indices: set[int],
+        chunk_index: int,
+        x_out: NDArray[np.integer],
+        z_out: NDArray[np.integer],
+        coeff_out: NDArray[np.complexfloating],
+        idx_dtype: np.dtype,
+    ) -> None:
+        return None
+
+
+class CheckpointChunkSink:
+    """Main-thread PKCP writer for streamed ``(x, z, coeff)`` chunks.
+
+    Same binary format as ``checkpoint_path=`` / CLI ``--write-chunks``:
+    framed symplectic indices plus complex coefficients. Resume uses the
+    sibling progress file. Never called from worker threads/processes.
+    """
+
+    __slots__ = ("_path",)
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = path
+
+    def write_sequential_chunk(
+        self,
+        next_chunk: int,
+        x_out: NDArray[np.integer],
+        z_out: NDArray[np.integer],
+        coeff_out: NDArray[np.complexfloating],
+        idx_dtype: np.dtype,
+    ) -> None:
+        _append_checkpoint_chunk(
+            self._path, next_chunk, x_out, z_out, coeff_out, idx_dtype
+        )
+
+    def write_parallel_chunk(
+        self,
+        completed_chunk_indices: set[int],
+        chunk_index: int,
+        x_out: NDArray[np.integer],
+        z_out: NDArray[np.integer],
+        coeff_out: NDArray[np.complexfloating],
+        idx_dtype: np.dtype,
+    ) -> None:
+        _append_parallel_checkpoint_chunk(
+            self._path,
+            completed_chunk_indices,
+            chunk_index,
+            x_out,
+            z_out,
+            coeff_out,
+            idx_dtype,
+        )
+
+
+def _make_chunk_sink(checkpoint_path: str | Path | None) -> NullChunkSink | CheckpointChunkSink:
+    """Build the drain-loop sink once (branch only at setup)."""
+    if checkpoint_path is None:
+        return NullChunkSink()
+    return CheckpointChunkSink(checkpoint_path)
+
+
+def iter_checkpoint_chunks(
+    path: str | Path,
+) -> Iterator[tuple[int, NDArray, NDArray, NDArray]]:
+    """Yield ``(chunk_index, x, z, coeff)`` from a written chunk file.
+
+    Public reader for files produced by ``checkpoint_path=`` on the
+    library APIs or by ``paulikit decompose --write-chunks PATH`` /
+    ``--checkpoint-path PATH``. One frame is live at a time. Arrays are
+    symplectic ``x``/``z`` indices and ``complex`` coefficients - use
+    ``terms_from_arrays`` only for subsets that need Pauli-string labels.
+    """
+    yield from _iter_checkpoint_frames(path)
+
+
 def _iter_chunked_coefficients(
     operator,
     is_sparse_input: bool,
@@ -958,6 +1056,9 @@ def _iter_chunked_coefficients(
     chunk_starts = list(range(0, n_active, chunk_size))
     resume_from, checkpoint_frames = _load_checkpoint(checkpoint_path)
     idx_dtype = _index_dtype_for_dim(dim)
+    # Construct once: drain always calls sink.write_* (NullChunkSink when
+    # checkpoint_path is None) so the per-chunk path stays branchless.
+    chunk_sink = _make_chunk_sink(checkpoint_path)
     if checkpoint_frames is not None and resume_from > 0:
         # Replay already-completed chunks from the checkpoint rather
         # than recomputing them. Frames record their own chunk index,
@@ -1005,11 +1106,10 @@ def _iter_chunked_coefficients(
             z_indices, n_qubits, inv_dim, atol,
         )
 
-        if checkpoint_path is not None:
-            _append_checkpoint_chunk(
-                checkpoint_path, chunk_index + 1,
-                chunk_x_out, z_idx, chunk_coeff_out, idx_dtype,
-            )
+        chunk_sink.write_sequential_chunk(
+            chunk_index + 1,
+            chunk_x_out, z_idx, chunk_coeff_out, idx_dtype,
+        )
 
         yield chunk_x_out, z_idx, chunk_coeff_out
 
@@ -2575,6 +2675,7 @@ def parallel_decompose(
     chunk_starts = list(range(0, n_active, chunk_size))
     completed_indices, checkpoint_frames = _load_parallel_checkpoint(checkpoint_path)
     idx_dtype = _index_dtype_for_dim(dim)
+    chunk_sink = _make_chunk_sink(checkpoint_path)
     if checkpoint_frames is not None:
         for ck_x, ck_z, ck_coeff in checkpoint_frames:
             labels = _pauli_label_batch(ck_x, ck_z, n_qubits)
@@ -2659,11 +2760,10 @@ def parallel_decompose(
                 chunk_index, chunk_x_out, z_idx, chunk_coeff_out = future.result()
                 _submit_next()  # keep in_flight near max_in_flight as work drains
 
-                if checkpoint_path is not None:
-                    _append_parallel_checkpoint_chunk(
-                        checkpoint_path, completed_indices, chunk_index,
-                        chunk_x_out, z_idx, chunk_coeff_out, idx_dtype,
-                    )
+                chunk_sink.write_parallel_chunk(
+                    completed_indices, chunk_index,
+                    chunk_x_out, z_idx, chunk_coeff_out, idx_dtype,
+                )
 
                 labels = _pauli_label_batch(chunk_x_out, z_idx, n_qubits)
                 if assume_hermitian:
@@ -2956,6 +3056,7 @@ def parallel_decompose_arrays(
     chunk_starts = list(range(0, n_active, chunk_size))
     completed_indices, checkpoint_frames = _load_parallel_checkpoint(checkpoint_path)
     idx_dtype = _index_dtype_for_dim(dim)
+    chunk_sink = _make_chunk_sink(checkpoint_path)
     if checkpoint_frames is not None:
         for ck_x, ck_z, ck_coeff in checkpoint_frames:
             if assume_hermitian:
@@ -3300,12 +3401,11 @@ def parallel_decompose_arrays(
                         continue
                     chunk_index, chunk_x_out, z_idx, chunk_coeff_out = item
 
-                    if checkpoint_path is not None:
-                        _append_parallel_checkpoint_chunk(
-                            checkpoint_path, completed_indices,
-                            chunk_index, chunk_x_out, z_idx,
-                            chunk_coeff_out, idx_dtype,
-                        )
+                    chunk_sink.write_parallel_chunk(
+                        completed_indices,
+                        chunk_index, chunk_x_out, z_idx,
+                        chunk_coeff_out, idx_dtype,
+                    )
 
                     if assume_hermitian:
                         _check_hermitian_violation(
@@ -3362,11 +3462,10 @@ def parallel_decompose_arrays(
                 chunk_index, chunk_x_out, z_idx, chunk_coeff_out = future.result()
                 _submit_next()
 
-                if checkpoint_path is not None:
-                    _append_parallel_checkpoint_chunk(
-                        checkpoint_path, completed_indices, chunk_index,
-                        chunk_x_out, z_idx, chunk_coeff_out, idx_dtype,
-                    )
+                chunk_sink.write_parallel_chunk(
+                    completed_indices, chunk_index,
+                    chunk_x_out, z_idx, chunk_coeff_out, idx_dtype,
+                )
 
                 if assume_hermitian:
                     _check_hermitian_violation(

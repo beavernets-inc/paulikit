@@ -245,12 +245,14 @@ Chunks: 5595, nonzero Pauli terms: 91652096
 
 Related flags for the same large-$N$ regime:
 
+- `--write-chunks PATH` — write each completed chunk as binary PKCP
+  frames (symplectic `x`, `z`, `coeff`) from the **main drain thread
+  only**. Without this flag the CLI counts terms and discards chunk
+  arrays. Alias: `--checkpoint-path` (same format; enables resume).
+  Read with `paulikit.algorithms.fwht.iter_checkpoint_chunks`.
 - `--stream` — sequential chunked streaming via `fwht_pauli_terms_iter`
   (labels per chunk; requires `--chunk-size`). Use when you want
   labelled dicts without the multi-core drain.
-- `--checkpoint PATH` — write a binary chunk-framed checkpoint after
-  each completed chunk so a long run can resume after interruption.
-
 Two things this path does differently, both deliberate:
 
 - **The operator is built sparse.** At 15 qubits a dense operator is

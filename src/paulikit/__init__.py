@@ -39,6 +39,8 @@ Decomposition, from ``paulikit.algorithms.fwht``:
                                 coeff) arrays - no label construction
     terms_from_arrays           render labels for a chosen subset of
                                 those arrays
+    iter_checkpoint_chunks      read PKCP frames written by
+                                checkpoint_path= / CLI --write-chunks
 
 Input preparation, from ``paulikit.hamiltonian``:
 
