@@ -31,7 +31,6 @@ See README.md for example invocations, or run
 ``paulikit <subcommand> --help`` for what each subcommand does.
 """
 
-import argparse
 import sys
 import time
 
@@ -41,6 +40,7 @@ from paulikit.algorithms.fwht import (
     fwht_pauli_terms,
     fwht_pauli_terms_iter,
 )
+from paulikit.cli_help import HelpFormatter, arg_parser, gnu_usage
 from paulikit.hamiltonian import build_hamiltonian, pad_to_power_of_two
 
 
@@ -439,212 +439,291 @@ def _positive_int(value: str) -> int:
     return number
 
 
+_DECOMPOSE_HELP = """\
+Demo/timing front end for the FWHT Pauli path: build a synthetic
+coupled-oscillator Hamiltonian for N (fixed, deterministic spring
+constants and masses — not a physical calibration), pad to a
+power-of-two dimension, decompose it, and print wall time plus
+nonzero term count.
+
+This subcommand does not load an arbitrary operator. For your own
+dense or sparse matrices, call the library APIs
+(fwht_pauli_terms, fwht_pauli_terms_iter, parallel_decompose_arrays,
+…). Default CLI input is dense; --parallel builds the Hamiltonian
+sparse so large N stay reachable.
+
+Default path (no --stream / --parallel) builds one label->coefficient
+dict for the whole operator. Use --stream or --parallel when that
+dict (or a dense matrix) would not fit in memory.
+
+Examples:
+  paulikit decompose -n 4
+  paulikit decompose -n 4 --show-terms
+  paulikit decompose -n 150 --parallel --chunk-size 2 --progress
+  paulikit decompose -n 150 --parallel --chunk-size 2 \\
+      --write-chunks /tmp/n150.pkcp
+  paulikit decompose -n 50 --stream --chunk-size 4 --show-terms
+"""
+
+_BENCHMARK_HELP = """\
+Run the same synthetic-Hamiltonian workflow as ``decompose`` across
+several N values and print a timing table (N, qubits, wall time,
+nonzero terms).
+
+Examples:
+  paulikit benchmark
+  paulikit benchmark -n 16 30 50
+  paulikit benchmark -n 4 8 --compare-dense-sparse
+"""
+
+_REGENERATE_HELP = """\
+Recompute the N=2 / N=4 expected Pauli decompositions with PennyLane
+as an independent oracle and print them ready to paste into
+paulikit/testing/fixtures.py. Does not edit that file; see its module
+docstring for when a hand update is needed (only if
+paulikit.hamiltonian's construction changes).
+
+Requires the development-only dependency PennyLane
+(``pip install pennylane``).
+
+Examples:
+  paulikit regenerate-fixtures
+"""
+
+
 def build_parser():
     """Construct the top-level argparse.ArgumentParser for the paulikit CLI."""
-    parser = argparse.ArgumentParser(
+    parser = arg_parser(
         prog="paulikit",
+        usage=gnu_usage(
+            "paulikit",
+            "[-h] [--version]",
+            "{decompose,benchmark,regenerate-fixtures} ...",
+        ),
         description=(
-            "Exact Pauli decomposition of complex matrices, with "
-            "streamed output so peak memory is bounded by chunk size "
-            "rather than term count."
+            "Exact Pauli decomposition of complex matrices. Peak memory "
+            "can be bounded by chunk size rather than by the full term "
+            "count when --stream or --parallel is used."
+        ),
+        epilog=(
+            "Run 'paulikit <command> --help' for that command's options "
+            "and examples. See also the package README."
         ),
     )
     parser.add_argument(
         "--version", action="version",
         version=f"%(prog)s {__version__}",
     )
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(
+        dest="command", required=True, metavar="COMMAND",
+        title="commands",
+        # Without an explicit prog, argparse fills this from the parent
+        # usage synopsis — which, once we set a multi-line GNU usage on
+        # the parent, becomes an unreadable prefix on every subcommand.
+        prog="paulikit",
+    )
 
     decompose_parser = subparsers.add_parser(
         "decompose",
-        help="Build a synthetic N-oscillator Hamiltonian and decompose it",
-        description=(
-            "Builds a coupled-oscillator Hamiltonian for a given N using "
-            "a fixed, deterministic (not physically calibrated) set of "
-            "spring constants and masses, pads it to a power-of-two "
-            "dimension, and runs the FWHT-based Pauli decomposition on "
-            "it, reporting timing and term count."
+        help="Demo: synthetic N-oscillator Hamiltonian, then Pauli-decompose it",
+        formatter_class=HelpFormatter,
+        usage=gnu_usage(
+            "paulikit decompose",
+            "[-h] [-n N] [--atol ATOL] [--show-terms]",
+            "[--sparse-output] [--chunk-size CS] [--stream]",
+            "[--parallel-labels] [--parallel]",
+            "[--executor {auto,thread,process}] [--n-workers N]",
+            "[--write-chunks PATH | --checkpoint-path PATH]",
+            "[--progress] [--no-eager-threads]",
         ),
+        description=_DECOMPOSE_HELP,
     )
     decompose_parser.add_argument(
-        "--n-oscillators", "-n", type=_positive_int, default=2,
-        help="Number of coupled oscillators, N (default: 2)",
+        "--n-oscillators", "-n", type=_positive_int, default=2, metavar="N",
+        help="Number of coupled oscillators (default: 2). Larger N means "
+             "more qubits after padding and, usually, far more Pauli "
+             "terms.",
     )
     decompose_parser.add_argument(
-        "--atol", type=float, default=1e-10,
-        help="Absolute coefficient threshold below which a term is "
-             "dropped as zero (default: 1e-10)",
+        "--atol", type=float, default=1e-10, metavar="ATOL",
+        help="Drop a coefficient whose absolute value is strictly below "
+             "this threshold (default: 1e-10). Same meaning as the "
+             "library ``atol`` argument.",
     )
     decompose_parser.add_argument(
         "--show-terms", action="store_true",
-        help="Print every nonzero Pauli term and its coefficient "
-             "(omitted by default since term counts grow quickly with N)",
+        help="Print every nonzero Pauli string and its coefficient. Off "
+             "by default because term counts grow quickly with N.\n"
+             "With --stream, prints each chunk as it arrives.\n"
+             "With --parallel, labels are never built: the flag prints a "
+             "short notice and the term count only.",
     )
     decompose_parser.add_argument(
         "--sparse-output", action="store_true",
-        help="Call fwht_pauli_coefficients(sparse=True) directly and "
-             "report its timing/active-row count, instead of the usual "
-             "label->coefficient dict via fwht_pauli_terms (which "
-             "already uses the sparse path internally either way - "
-             "this flag is for inspecting the raw sparse output shape "
-             "itself)",
+        help="Call fwht_pauli_coefficients(sparse=True) and report its "
+             "timing and active-row count, instead of the usual "
+             "label->coefficient dict from fwht_pauli_terms.\n"
+             "fwht_pauli_terms already uses the sparse path internally; "
+             "this flag is for inspecting the raw sparse array shape "
+             "itself. Only used on the default (non-stream, "
+             "non-parallel) path — --stream / --parallel take "
+             "precedence if also set.",
     )
     decompose_parser.add_argument(
-        "--chunk-size", type=int, default=None,
-        help="Process active rows in blocks of at most this size instead "
-             "of one (n_active, dim) array all at once, bounding peak "
-             "memory to roughly chunk_size * dim complex entries - needed "
-             "at large N where the whole-array approach exhausts memory "
-             "(default: None). On the library APIs "
-             "(parallel_decompose / parallel_decompose_arrays) omitting "
-             "chunk_size auto-tunes against measured cache boundaries; "
-             "this CLI flag is always explicit. Required with --stream "
-             "and with --parallel.",
+        "--chunk-size", type=int, default=None, metavar="CS",
+        help="Process active rows in blocks of at most CS instead of one "
+             "(n_active, dim) array, bounding peak memory to roughly "
+             "CS * dim complex entries.\n"
+             "Required with --stream and with --parallel.\n"
+             "On the library APIs (parallel_decompose / "
+             "parallel_decompose_arrays), omitting chunk_size auto-tunes "
+             "against measured cache boundaries; this CLI flag is always "
+             "explicit when set.",
     )
     decompose_parser.add_argument(
         "--stream", action="store_true",
-        help="Use fwht_pauli_terms_iter instead of fwht_pauli_terms: "
-             "yields one label->coefficient dict per chunk instead of "
-             "building one combined dict for the whole operator, so peak "
-             "memory never depends on the total term count - needed at "
-             "N where the full result (e.g. 91.65M terms at N=150) does "
-             "not fit in memory even after the accumulator fix. "
-             "Requires --chunk-size.",
+        help="Use fwht_pauli_terms_iter: yield one label->coefficient "
+             "dict per chunk instead of one combined dict for the whole "
+             "operator, so peak memory does not grow with total term "
+             "count.\n"
+             "Needed when the full result would not fit (e.g. tens of "
+             "millions of terms at large N). Requires --chunk-size.",
     )
     decompose_parser.add_argument(
         "--parallel-labels", action="store_true",
-        help="With --stream, use the oneTBB-parallel label kernel "
-             "instead of the serial one for each chunk. Wins ~1.1-1.4x "
-             "wall-clock in isolation, but delivers no measurable "
-             "benefit once embedded in the real streaming pipeline at "
-             "N=150 (dict construction there dominates at ~60%% of "
-             "total time, dwarfing labeling's ~7%% share). Ignored "
-             "without --stream.",
+        help="With --stream, use the oneTBB-parallel label kernel for "
+             "each chunk instead of the serial one.\n"
+             "Wins about 1.1-1.4x wall-clock in isolation, but usually "
+             "adds little once embedded in the streaming pipeline at "
+             "large N (dict construction dominates labeling there).\n"
+             "Ignored without --stream.",
     )
     decompose_parser.add_argument(
         "--parallel", action="store_true",
-        help="Decompose across multiple workers via "
-             "parallel_decompose_arrays, streaming raw (x, z, coeff) "
-             "arrays per chunk rather than building labels. This is "
-             "the path that scales: at N=150 it does 91.6M terms in "
-             "~1.0s in ~72 MiB, and it reaches problem sizes a dense "
-             "implementation cannot hold at all (15 qubits needs "
-             "16 GiB dense, 16 qubits needs 64 GiB). Requires "
-             "--chunk-size. Labels are not built, so --show-terms "
-             "reports counts only.",
+        help="Decompose across workers via parallel_decompose_arrays, "
+             "streaming raw (x, z, coeff) arrays per chunk rather than "
+             "building Pauli labels.\n"
+             "This is the path that scales: large-N runs finish in about "
+             "a second on a typical workstation while holding tens of "
+             "MiB, and it reaches sizes a dense matrix cannot hold "
+             "(15 qubits ~16 GiB dense; 16 qubits ~64 GiB).\n"
+             "Requires --chunk-size. Builds the Hamiltonian sparse. "
+             "--show-terms cannot print labels on this path.",
     )
     decompose_parser.add_argument(
         "--executor", choices=("auto", "thread", "process"), default="auto",
-        help="With --parallel, how to drain chunks. 'thread' runs the "
-             "compiled kernels concurrently with no pickling (both "
-             "release the GIL); 'process' uses a process pool, which "
-             "pays IPC but does not depend on the kernels being built. "
-             "'auto' (default) picks thread when the compiled kernels "
-             "are available and process otherwise - the right choice "
-             "differs by ~6x in each direction, so it is decided per "
-             "build rather than globally.",
+        metavar="{auto,thread,process}",
+        help="With --parallel, how to run chunk work (default: auto).\n"
+             "  thread   — concurrent compiled kernels, no pickling "
+             "(both release the GIL).\n"
+             "  process  — process pool; pays IPC but does not need "
+             "compiled kernels.\n"
+             "  auto     — thread when compiled kernels are available, "
+             "else process.\n"
+             "Wrong choice can cost ~6x either way, so auto decides per "
+             "install rather than globally.",
     )
     decompose_parser.add_argument(
-        "--n-workers", type=int, default=None,
-        help="With --parallel, how many workers. Defaults to the "
-             "number of distinct physical cores (not logical CPUs - "
-             "hyperthread siblings share execution units and measured "
-             "worse). On the 4-core development machine, 4 threads "
-             "measured 3.44x against an Amdahl ceiling of 3.63x, "
-             "while 8 cost 1.72x the cycles for no wall-clock gain.",
+        "--n-workers", type=int, default=None, metavar="N",
+        help="With --parallel, worker count. Default: number of distinct "
+             "physical cores (not logical CPUs — hyperthread siblings "
+             "share execution units and measured worse).\n"
+             "On a 4-core machine, 4 threads reached ~3.44x vs an Amdahl "
+             "ceiling of ~3.63x; 8 threads spent more cycles for no "
+             "wall-clock gain.",
     )
     decompose_parser.add_argument(
         "--write-chunks", type=str, default=None, metavar="PATH",
         help="Write each streamed chunk to PATH as binary PKCP frames "
-             "(symplectic x, z indices + complex coefficients). Writing "
-             "runs only on the main drain thread - workers never touch "
-             "the file. Without this flag (or --checkpoint-path), the "
-             "CLI counts terms and discards chunk arrays. Requires "
-             "--chunk-size on streamed/parallel paths. Same format as "
-             "--checkpoint-path (resume-capable); prefer this name when "
-             "you want a usable on-disk result. Read back with "
+             "(symplectic x, z indices + complex coefficients).\n"
+             "I/O runs only on the main drain thread — workers never "
+             "touch the file. Without this flag (or --checkpoint-path), "
+             "the CLI counts terms and discards chunk arrays.\n"
+             "Requires --chunk-size on --stream / --parallel. Same "
+             "resume-capable format as --checkpoint-path; prefer this "
+             "name when you want a usable on-disk result.\n"
+             "Read back with "
              "paulikit.algorithms.fwht.iter_checkpoint_chunks.",
     )
     decompose_parser.add_argument(
         "--checkpoint-path", type=str, default=None, metavar="PATH",
         help="Alias for --write-chunks: write each completed chunk to "
-             "PATH so an interrupted run can resume with the same path. "
+             "PATH so an interrupted run can resume with the same path.\n"
              "Omit for no on-disk writer (default).",
     )
     decompose_parser.add_argument(
         "--progress", action="store_true",
         help="With --parallel or --stream, print chunk progress on "
              "stderr from the main drain thread only (k/N, percent, "
-             "ETA; stride-throttled; TTY overwrites one line). Off by "
-             "default so the quiet drain path has no per-chunk "
-             "progress calls - scripts, CI, and measurement harnesses "
-             "stay quiet. Library APIs never emit progress.",
+             "ETA; stride-throttled; TTY overwrites one line).\n"
+             "Off by default: the quiet drain loop has no per-chunk "
+             "progress calls, so scripts, CI, and measurement harnesses "
+             "stay quiet. Both quiet and progress paths still pre-count "
+             "planned chunks once before the timed drain (fair warm-up).\n"
+             "Library APIs never emit progress.",
     )
     decompose_parser.add_argument(
         "--no-eager-threads", dest="eager_threads", action="store_false",
-        help="With --parallel and --executor thread (or --executor "
-             "auto resolving to thread), restore ThreadPoolExecutor's "
-             "default LAZY thread spin-up instead of forcing all "
-             "--n-workers OS threads to exist before the first chunk "
-             "is submitted (the default). Measured directly: without "
-             "eager spin-up, the first few chunks start staggered by "
-             "~350-450us each rather than together, since each of the "
-             "pool's first few submit() calls on a fresh pool forces "
-             "a new OS thread creation. A one-time ~1.5-2ms cost "
-             "either way - this only changes WHEN it is paid (all up "
-             "front vs staggered across the first several chunks), "
-             "not whether it is paid. No effect with --executor "
-             "process or at --n-workers 1. Output is unaffected - "
-             "this cannot change correctness.",
+        help="With --parallel and a thread executor (explicit or auto), "
+             "keep ThreadPoolExecutor's lazy thread spin-up instead of "
+             "creating all --n-workers OS threads before the first "
+             "submit (the default).\n"
+             "Without eager spin-up, the first few chunks start "
+             "staggered by ~350-450 us each while threads are created. "
+             "The one-time cost (~1.5-2 ms) is paid either way — this "
+             "only changes when.\n"
+             "No effect with --executor process or --n-workers 1. "
+             "Does not change numerical results.",
     )
     decompose_parser.set_defaults(func=cmd_decompose)
 
     benchmark_parser = subparsers.add_parser(
         "benchmark",
         help="Time the decomposition across a sweep of N values",
-        description=(
-            "Runs the decompose workflow across multiple N values and "
-            "prints a timing table."
+        formatter_class=HelpFormatter,
+        usage=gnu_usage(
+            "paulikit benchmark",
+            "[-h] [-n N...] [--atol ATOL]",
+            "[--compare-dense-sparse] [--chunk-size CS]",
         ),
+        description=_BENCHMARK_HELP,
     )
     benchmark_parser.add_argument(
         "--n-oscillators", "-n", type=_positive_int, nargs="+",
-        default=[2, 4, 8, 16, 30],
-        help="Space-separated list of N values to benchmark "
-             "(default: 2 4 8 16 30)",
+        default=[2, 4, 8, 16, 30], metavar="N",
+        help="One or more oscillator counts to time "
+             "(default: 2 4 8 16 30).",
     )
     benchmark_parser.add_argument(
-        "--atol", type=float, default=1e-10,
-        help="Absolute coefficient threshold below which a term is "
-             "dropped as zero (default: 1e-10)",
+        "--atol", type=float, default=1e-10, metavar="ATOL",
+        help="Absolute coefficient threshold; terms below this are "
+             "dropped (default: 1e-10).",
     )
     benchmark_parser.add_argument(
         "--compare-dense-sparse", action="store_true",
-        help="Instead of the usual fwht_pauli_terms timing table, time "
-             "fwht_pauli_coefficients's dense (sparse=False) and sparse "
-             "(sparse=True) output modes directly, side by side, at "
-             "each N (this is wall-clock timing only)",
+        help="Instead of the usual fwht_pauli_terms table, time "
+             "fwht_pauli_coefficients dense (sparse=False) vs sparse "
+             "(sparse=True) side by side at each N.\n"
+             "Wall-clock only; no correctness check.",
     )
     benchmark_parser.add_argument(
-        "--chunk-size", type=int, default=None,
-        help="Passed through to fwht_pauli_terms - see decompose "
-             "--chunk-size's help. Ignored when --compare-dense-sparse is "
-             "set (that path calls fwht_pauli_coefficients directly "
-             "without chunking).",
+        "--chunk-size", type=int, default=None, metavar="CS",
+        help="Passed through to fwht_pauli_terms (see "
+             "``paulikit decompose --chunk-size``).\n"
+             "Ignored with --compare-dense-sparse (that path calls "
+             "fwht_pauli_coefficients without chunking).",
     )
     benchmark_parser.set_defaults(func=cmd_benchmark)
 
     regenerate_parser = subparsers.add_parser(
         "regenerate-fixtures",
-        help="Regenerate testing/fixtures.py's expected_terms constants (prints only)",
-        description=(
-            "Recomputes the N=2/N=4 expected Pauli decompositions using "
-            "PennyLane as an independent oracle and prints them in a "
-            "form ready to paste into paulikit/testing/fixtures.py. Does "
-            "not modify that file automatically - see its module "
-            "docstring for when you'd need to do this (only if "
-            "paulikit.hamiltonian's Hamiltonian construction changes)."
+        help=(
+            "Print regenerated FIXTURE_N2/N4 constants "
+            "(PennyLane; does not edit files)"
         ),
+        formatter_class=HelpFormatter,
+        usage=gnu_usage("paulikit regenerate-fixtures", "[-h]"),
+        description=_REGENERATE_HELP,
     )
     regenerate_parser.set_defaults(func=cmd_regenerate_fixtures)
 
