@@ -81,6 +81,75 @@ def _resolve_chunk_write_path(args):
     return write or ckpt, 0
 
 
+class _ChunkProgress:
+    """Opt-in main-thread progress on stderr for streamed CLI drains.
+
+    Constructed only when ``--progress`` is on. The disabled path must
+    not call into this class at all (separate drain loops) so the hot
+    path stays free of per-chunk progress branches and method calls.
+
+    ``n_total`` comes from the CLI's shared pre-drain
+    ``count_stream_chunks`` call (also run when progress is off, so
+    quiet and progress paths share the same CPU warm-up before the
+    timed section).
+
+    When enabled, most chunks pay only a cheap stride check
+    (``n_chunks % stride``); ``time.perf_counter`` and I/O run on
+    stride ticks that also pass a ~0.25s wall throttle, plus first and
+    last. Library APIs never use this.
+    """
+
+    __slots__ = ("_n_total", "_tty", "_start", "_last_t", "_open_cr", "_stride")
+
+    def __init__(self, n_total: int, *, stride: int = 32) -> None:
+        self._n_total = max(0, int(n_total))
+        self._tty = sys.stderr.isatty()
+        self._start = time.perf_counter()
+        self._last_t = 0.0
+        self._open_cr = False
+        self._stride = max(1, int(stride))
+
+    def update(self, n_chunks: int, total_terms: int, *, force: bool = False) -> None:
+        if not force and n_chunks > 1 and (n_chunks % self._stride) != 0:
+            return
+        now = time.perf_counter()
+        if not force and n_chunks > 1 and (now - self._last_t) < 0.25:
+            return
+        self._last_t = now
+        elapsed = now - self._start
+        if self._n_total > 0:
+            pct = 100.0 * n_chunks / self._n_total
+            chunk_part = f"chunks={n_chunks}/{self._n_total} ({pct:.1f}%)"
+            remaining = self._n_total - n_chunks
+            if elapsed >= 0.5 and n_chunks >= 2 and remaining > 0:
+                rate = n_chunks / elapsed
+                eta_s = f"{remaining / rate:.1f}s"
+            elif remaining <= 0:
+                eta_s = "0.0s"
+            else:
+                eta_s = "--"
+            line = (
+                f"paulikit: {chunk_part}  terms={total_terms}  "
+                f"elapsed={elapsed:.2f}s  eta={eta_s}"
+            )
+        else:
+            line = (
+                f"paulikit: chunks={n_chunks}  terms={total_terms}  "
+                f"elapsed={elapsed:.2f}s"
+            )
+        if self._tty:
+            print(f"\r{line}", end="", file=sys.stderr, flush=True)
+            self._open_cr = True
+        else:
+            print(line, file=sys.stderr, flush=True)
+
+    def finish(self, n_chunks: int, total_terms: int) -> None:
+        self.update(n_chunks, total_terms, force=True)
+        if self._open_cr:
+            print(file=sys.stderr)
+            self._open_cr = False
+
+
 def cmd_decompose(args):
     """Build a synthetic N-oscillator Hamiltonian and Pauli-decompose it."""
     n = args.n_oscillators
@@ -114,12 +183,26 @@ def cmd_decompose(args):
             print("--parallel requires --chunk-size", file=sys.stderr)
             return 1
 
-        from paulikit.algorithms.fwht import parallel_decompose_arrays
+        from paulikit.algorithms.fwht import (
+            count_stream_chunks,
+            parallel_decompose_arrays,
+        )
+
+        # Always resolve the planned chunk count before the timed drain.
+        # Same prep work the drain will redo - intentionally shared by
+        # quiet and --progress paths so both start the timed section on
+        # a warm CPU (DVFS), and --progress can show k/N without a
+        # progress-only extra pass.
+        n_chunks_planned = count_stream_chunks(padded, args.chunk_size)
+        want_progress = bool(getattr(args, "progress", False))
+        progress = (
+            _ChunkProgress(n_chunks_planned) if want_progress else None
+        )
 
         start = time.perf_counter()
         total_terms = 0
         n_chunks = 0
-        for _x, _z, coeff in parallel_decompose_arrays(
+        stream = parallel_decompose_arrays(
             padded,
             chunk_size=args.chunk_size,
             n_workers=args.n_workers,
@@ -127,9 +210,19 @@ def cmd_decompose(args):
             checkpoint_path=write_path,
             executor=args.executor,
             eager_threads=args.eager_threads,
-        ):
-            n_chunks += 1
-            total_terms += len(coeff)
+        )
+        # Progress off: no per-chunk call/branch. Progress on: separate
+        # loop body so the quiet path stays free of heartbeat cost.
+        if progress is not None:
+            for _x, _z, coeff in stream:
+                n_chunks += 1
+                total_terms += len(coeff)
+                progress.update(n_chunks, total_terms)
+            progress.finish(n_chunks, total_terms)
+        else:
+            for _x, _z, coeff in stream:
+                n_chunks += 1
+                total_terms += len(coeff)
         elapsed = time.perf_counter() - start
 
         print(f"Decomposition time (parallel, executor={args.executor}): "
@@ -157,21 +250,40 @@ def cmd_decompose(args):
                   file=sys.stderr)
             return 1
 
+        from paulikit.algorithms.fwht import count_stream_chunks
+
+        n_chunks_planned = count_stream_chunks(padded, args.chunk_size)
+        want_progress = bool(getattr(args, "progress", False))
+        progress = (
+            _ChunkProgress(n_chunks_planned) if want_progress else None
+        )
+
         start = time.perf_counter()
         total_terms = 0
         n_chunks = 0
-        for chunk_terms in fwht_pauli_terms_iter(
+        stream = fwht_pauli_terms_iter(
             padded,
             chunk_size=args.chunk_size,
             atol=args.atol,
             checkpoint_path=write_path,
             parallel_labels=args.parallel_labels,
-        ):
-            n_chunks += 1
-            total_terms += len(chunk_terms)
-            if args.show_terms:
-                for label in sorted(chunk_terms):
-                    print(f"  {label}: {chunk_terms[label]!r}")
+        )
+        if progress is not None:
+            for chunk_terms in stream:
+                n_chunks += 1
+                total_terms += len(chunk_terms)
+                progress.update(n_chunks, total_terms)
+                if args.show_terms:
+                    for label in sorted(chunk_terms):
+                        print(f"  {label}: {chunk_terms[label]!r}")
+            progress.finish(n_chunks, total_terms)
+        else:
+            for chunk_terms in stream:
+                n_chunks += 1
+                total_terms += len(chunk_terms)
+                if args.show_terms:
+                    for label in sorted(chunk_terms):
+                        print(f"  {label}: {chunk_terms[label]!r}")
         elapsed = time.perf_counter() - start
 
         print(f"Decomposition time (streamed): {elapsed:.4f}s")
@@ -458,6 +570,15 @@ def build_parser():
         help="Alias for --write-chunks: write each completed chunk to "
              "PATH so an interrupted run can resume with the same path. "
              "Omit for no on-disk writer (default).",
+    )
+    decompose_parser.add_argument(
+        "--progress", action="store_true",
+        help="With --parallel or --stream, print chunk progress on "
+             "stderr from the main drain thread only (k/N, percent, "
+             "ETA; stride-throttled; TTY overwrites one line). Off by "
+             "default so the quiet drain path has no per-chunk "
+             "progress calls - scripts, CI, and measurement harnesses "
+             "stay quiet. Library APIs never emit progress.",
     )
     decompose_parser.add_argument(
         "--no-eager-threads", dest="eager_threads", action="store_false",

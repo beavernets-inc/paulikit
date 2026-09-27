@@ -159,6 +159,7 @@ paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
     --executor thread
 # optional: --n-workers N   # default = physical cores
 # optional: --write-chunks PATH  # PKCP stream writer (alias --checkpoint-path)
+# optional: --progress           # main-thread chunk ticks on stderr
 ```
 
 **Dense fast path (library) — skip the sparsity scan.** The CLI does
@@ -250,6 +251,12 @@ Related flags for the same large-$N$ regime:
   only**. Without this flag the CLI counts terms and discards chunk
   arrays. Alias: `--checkpoint-path` (same format; enables resume).
   Read with `paulikit.algorithms.fwht.iter_checkpoint_chunks`.
+- `--progress` — opt-in chunk progress on **stderr** (`k/N`, percent,
+  ETA) from a separate main-drain loop body (quiet path has no
+  per-chunk progress calls). Off by default. Parallel/stream CLI
+  paths always pre-count chunks before the timed drain so quiet and
+  progress runs share the same CPU warm-up. Library APIs never emit
+  progress.
 - `--stream` — sequential chunked streaming via `fwht_pauli_terms_iter`
   (labels per chunk; requires `--chunk-size`). Use when you want
   labelled dicts without the multi-core drain.

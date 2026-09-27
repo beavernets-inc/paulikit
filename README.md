@@ -132,6 +132,7 @@ paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
     --executor thread
 # optional: --n-workers N   # default = physical cores
 # optional: --write-chunks PATH   # persist streamed (x, z, coeff) frames
+# optional: --progress            # main-thread chunk ticks on stderr
 ```
 
 Without `--write-chunks` (or its alias `--checkpoint-path`), the CLI
@@ -142,6 +143,14 @@ drain thread** appends binary PKCP frames (symplectic `x`/`z` plus
 with `iter_checkpoint_chunks` (see below). Pauli-string labels are
 optional via `terms_from_arrays` on **subsets** — do not convert
 billions of terms to Python strings by default.
+
+`--progress` (opt-in) prints throttled `chunks=k/N (p%) … eta=…`
+lines on **stderr** from a **separate** drain loop body — when the
+flag is off, the quiet path makes no per-chunk progress calls.
+Both paths run a short pre-drain chunk-count prep (outside the
+reported Decomposition time) so quiet and progress starts share the
+same CPU warm-up. Workers and library APIs never emit progress.
+
 **Dense fast path (library) — skip the sparsity scan.** Use when the
 operator is a full dense `ndarray` (e.g. random Hermitian). The CLI
 does not yet expose `assume_dense`; call the array API directly:

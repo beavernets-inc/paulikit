@@ -133,6 +133,44 @@ def test_checkpoint_round_trips_through_the_cli(capsys, tmp_path):
     assert f"nonzero Pauli terms: {expected}" in out.out
 
 
+def test_progress_is_off_by_default(capsys):
+    code, out = _run(
+        capsys, "--n-oscillators", "20", "--chunk-size", "2", "--parallel",
+    )
+    assert code == 0
+    assert "paulikit: chunks=" not in out.err
+
+
+def test_progress_prints_on_stderr_for_parallel(capsys):
+    expected = _expected_term_count(20)
+    code, out = _run(
+        capsys, "--n-oscillators", "20", "--chunk-size", "2",
+        "--parallel", "--progress",
+    )
+    assert code == 0
+    assert f"nonzero Pauli terms: {expected}" in out.out
+    assert "paulikit: chunks=" in out.err
+    assert "/" in out.err  # k/N
+    assert "%" in out.err
+    assert "eta=" in out.err
+    assert "terms=" in out.err
+    assert "elapsed=" in out.err
+    # Progress must not leak onto the normal result stream.
+    assert "paulikit: chunks=" not in out.out
+
+
+def test_progress_prints_on_stderr_for_stream(capsys):
+    code, out = _run(
+        capsys, "--n-oscillators", "20", "--chunk-size", "2",
+        "--stream", "--progress",
+    )
+    assert code == 0
+    assert "paulikit: chunks=" in out.err
+    assert "%" in out.err
+    assert "eta=" in out.err
+    assert "Decomposition time (streamed)" in out.out
+
+
 @pytest.mark.parametrize("command", [[], ["decompose"], ["benchmark"]])
 def test_help_renders(capsys, command):
     """`--help` must actually render.

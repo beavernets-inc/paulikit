@@ -979,6 +979,43 @@ def iter_checkpoint_chunks(
     yield from _iter_checkpoint_frames(path)
 
 
+def count_stream_chunks(
+    operator,
+    chunk_size: int,
+    *,
+    assume_dense: bool = False,
+) -> int:
+    """Return how many streamed chunks ``chunk_size`` will produce.
+
+    Same prep as the streamed/parallel drains. The CLI always calls
+    this once before the timed ``--parallel`` / ``--stream`` drain so
+    quiet and ``--progress`` paths share a CPU warm-up; ``--progress``
+    also uses the count for ``k/N``. Library callers that only need
+    the count without draining can call this directly; drains that
+    already expose ``chunk_plan=`` can fill ``n_chunks`` during their
+    own prep instead.
+    """
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+    (
+        _operator,
+        is_sparse_input,
+        dim,
+        _n_qubits,
+        _p_nz,
+        _q_nz,
+        x_nz,
+        _values_nz,
+    ) = _prepare_operator_for_fwht(operator, assume_dense=assume_dense)
+    active_x, _inverse = _active_x_and_inverse(
+        x_nz, dim, is_fully_dense=assume_dense and not is_sparse_input
+    )
+    n_active = len(active_x)
+    if n_active == 0:
+        return 0
+    return (n_active + chunk_size - 1) // chunk_size
+
+
 def _iter_chunked_coefficients(
     operator,
     is_sparse_input: bool,
@@ -994,6 +1031,7 @@ def _iter_chunked_coefficients(
     chunk_size: int,
     atol: float,
     checkpoint_path: str | Path | None,
+    chunk_plan: dict | None = None,
 ):
     """Generator over chunks of already-thresholded ``(x, z,
     coefficient)`` triples - the shared tile-producing core of the
@@ -1009,6 +1047,10 @@ def _iter_chunked_coefficients(
 
     Yields ``(chunk_x, chunk_z, chunk_coeff)`` - three 1-D arrays of
     equal length, one triple per chunk, in chunk order.
+
+    If ``chunk_plan`` is a dict, it receives ``n_chunks`` (planned
+    tile count) once the chunk grid is known, before any yield - so a
+    CLI progress helper can show ``k/N`` without a second prep pass.
     """
     if chunk_size < 1:
         raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
@@ -1054,6 +1096,8 @@ def _iter_chunked_coefficients(
         sorted_values = values_nz[order]
 
     chunk_starts = list(range(0, n_active, chunk_size))
+    if chunk_plan is not None:
+        chunk_plan["n_chunks"] = len(chunk_starts)
     resume_from, checkpoint_frames = _load_checkpoint(checkpoint_path)
     idx_dtype = _index_dtype_for_dim(dim)
     # Construct once: drain always calls sink.write_* (NullChunkSink when
@@ -1814,6 +1858,7 @@ def fwht_pauli_terms_iter(
     checkpoint_path: str | Path | None = None,
     parallel_labels: bool = False,
     assume_dense: bool = False,
+    chunk_plan: dict | None = None,
 ) -> Iterator[dict[str, complex] | dict[str, float]]:
     """Streaming counterpart to ``fwht_pauli_terms``. Yields one
     ``dict`` of terms per chunk instead of building one combined
@@ -1923,6 +1968,7 @@ def fwht_pauli_terms_iter(
         operator, is_sparse_input, active_x, inverse, p_nz, q_nz, values_nz,
         dim, n_qubits,
         n_active, z_indices, chunk_size, atol, checkpoint_path,
+        chunk_plan=chunk_plan,
     ):
         labels = _pauli_label_batch(chunk_x, chunk_z, n_qubits, parallel=parallel_labels)
 
@@ -2784,6 +2830,7 @@ def parallel_decompose_arrays(
     executor: str = "auto",
     assume_dense: bool = False,
     eager_threads: bool = True,
+    chunk_plan: dict | None = None,
 ) -> Iterator[tuple[NDArray, NDArray, NDArray]]:
     """Multi-core decomposition yielding raw ``(x, z, coeff)`` arrays.
 
@@ -2998,6 +3045,7 @@ def parallel_decompose_arrays(
         for chunk_x, chunk_z, chunk_coeff in _iter_chunked_coefficients(
             operator, is_sparse_input, active_x, inverse, p_nz, q_nz, values_nz,
             dim, n_qubits, n_active, z_indices, chunk_size, atol, checkpoint_path,
+            chunk_plan=chunk_plan,
         ):
             if assume_hermitian:
                 _check_hermitian_violation(
@@ -3054,6 +3102,8 @@ def parallel_decompose_arrays(
         sorted_values = values_nz[order]
 
     chunk_starts = list(range(0, n_active, chunk_size))
+    if chunk_plan is not None:
+        chunk_plan["n_chunks"] = len(chunk_starts)
     completed_indices, checkpoint_frames = _load_parallel_checkpoint(checkpoint_path)
     idx_dtype = _index_dtype_for_dim(dim)
     chunk_sink = _make_chunk_sink(checkpoint_path)
