@@ -8,6 +8,7 @@
 
 installation
 tutorial
+runtime_estimates
 background
 theory
 non_hermitian

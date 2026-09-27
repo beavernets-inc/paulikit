@@ -59,6 +59,7 @@ Requires Python >= 3.10; the only runtime dependency is NumPy.
 |---|---|
 | [`docs/installation.md`](docs/installation.md) | Full build and install reference |
 | [`docs/tutorial.md`](docs/tutorial.md) | Step-by-step walkthrough |
+| [`docs/runtime_estimates.md`](docs/runtime_estimates.md) | When large runs take seconds vs hours |
 | [`docs/theory.md`](docs/theory.md) | Mathematical derivation |
 | [`docs/background.md`](docs/background.md) | Physical motivation |
 | [`docs/non_hermitian.md`](docs/non_hermitian.md) | Non-Hermitian operators |

@@ -260,6 +260,11 @@ Related flags for the same large-$N$ regime:
 - `--stream` — sequential chunked streaming via `fwht_pauli_terms_iter`
   (labels per chunk; requires `--chunk-size`). Use when you want
   labelled dicts without the multi-core drain.
+
+For when discard vs write vs materialising a full dict turns into
+minutes or hours on modest hardware, see
+{doc}`runtime_estimates`.
+
 Two things this path does differently, both deliberate:
 
 - **The operator is built sparse.** At 15 qubits a dense operator is
