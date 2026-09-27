@@ -158,7 +158,7 @@ hold:
 paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
     --executor thread
 # optional: --n-workers N   # default = physical cores
-# optional: --checkpoint PATH  # binary chunk-framed restart
+# optional: --write-chunks PATH  # PKCP stream writer (alias --checkpoint-path)
 ```
 
 **Dense fast path (library) — skip the sparsity scan.** The CLI does
