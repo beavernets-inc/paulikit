@@ -1,5 +1,7 @@
 # paulikit
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22992252.svg)](https://doi.org/10.5281/zenodo.22992252)
+
 Exact Pauli decomposition of arbitrary complex matrices, at scales
 where materialising the full coefficient set is the binding
 constraint.

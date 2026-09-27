@@ -59,7 +59,10 @@ keywords:
   - checkpoint and restart
 license: GPL-3.0-or-later
 version: 0.1.2
-# NOTE: no DOI yet. This is added on the first archived release
-# (Zenodo), and the version above must be bumped to match the tag that
-# is archived. A CITATION.cff claiming a version that was never
-# released is worse than none.
+doi: "10.5281/zenodo.22992252"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.22992252"
+    description: "This software version (0.1.2) on Zenodo"
+# Concept DOI (always resolves to the latest archived version):
+# 10.5281/zenodo.22992251
