@@ -28,7 +28,7 @@ copyright = "2026, Beavernets Technologies"
 # Match CITATION.cff / pyproject.toml citation order.
 author = (
     "Mohammadreza Khellat, Mohammad Masoumi, "
-    "Saman Nasouri, Soroush Nasouri"
+    "Saman Nasoori, Soroush Nasoori"
 )
 release = paulikit.__version__
 version = release

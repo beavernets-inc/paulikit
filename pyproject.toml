@@ -22,8 +22,8 @@ license-files = ["LICENSE"]
 authors = [
     { name = "Mohammadreza Khellat" },
     { name = "Mohammad Masoumi" },
-    { name = "Saman Nasouri" },
-    { name = "Soroush Nasouri" },
+    { name = "Saman Nasoori" },
+    { name = "Soroush Nasoori" },
 ]
 maintainers = [
     { name = "paulikit developers", email = "dev@beavernets.com" },

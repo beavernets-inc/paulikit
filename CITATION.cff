@@ -18,10 +18,10 @@ authors:
     family-names: Masoumi
     affiliation: Beavernets Technologies
   - given-names: Saman
-    family-names: Nasouri
+    family-names: Nasoori
     affiliation: Beavernets Technologies
   - given-names: Soroush
-    family-names: Nasouri
+    family-names: Nasoori
     affiliation: Beavernets Technologies
 repository-code: "https://codeberg.org/beavernets/paulikit"
 # Wheel CI / GitHub mirror (not the citation canonical URL):
