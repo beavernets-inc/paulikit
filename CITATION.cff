@@ -59,10 +59,12 @@ keywords:
   - checkpoint and restart
 license: GPL-3.0-or-later
 version: 0.1.3
-doi: "10.5281/zenodo.23009427"
+doi: "10.5281/zenodo.22992251"
 identifiers:
   - type: doi
-    value: "10.5281/zenodo.23009427"
-    description: "paulikit 0.1.3 on Zenodo (CITATION DOI corrected)"
-# Concept DOI (always resolves to the latest archived version):
-# 10.5281/zenodo.22992251
+    value: "10.5281/zenodo.22992251"
+    description: "paulikit concept DOI (resolves to latest; version 0.1.3 = 10.5281/zenodo.23009427)"
+# Concept DOI used as primary cite target (always latest).
+# Version DOI for 0.1.3 archive: 10.5281/zenodo.23009427
+# (doi.org/DataCite registration for recent version DOIs was 404 at publish time;
+#  Zenodo record URLs and concept DOI resolve.)

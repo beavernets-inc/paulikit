@@ -24,8 +24,7 @@ versions; see the README's Status section.
   author metadata. Prior PyPI releases `0.1.0`–`0.1.2` are to be removed
   or yanked after this version is live (those filenames cannot be
   reused).
-- Zenodo software DOI for this version (archive CITATION matches):
-  [10.5281/zenodo.23009427](https://doi.org/10.5281/zenodo.23009427)
+- Zenodo: cite concept DOI [10.5281/zenodo.22992251](https://doi.org/10.5281/zenodo.22992251) (resolves to latest). Version archive for 0.1.3 is [zenodo.org/records/23009427](https://zenodo.org/records/23009427) (version DOI 10.5281/zenodo.23009427 pending DataCite registration).
   (concept [10.5281/zenodo.22992251](https://doi.org/10.5281/zenodo.22992251)).
   Measurements package 1.0.2 (Nasoori inside the tarball, not only
   in Zenodo web metadata):
