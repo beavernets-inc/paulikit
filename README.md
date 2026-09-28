@@ -1,7 +1,7 @@
 # paulikit
 
 [![PyPI](https://img.shields.io/pypi/v/paulikit.svg)](https://pypi.org/project/paulikit/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22992252.svg)](https://doi.org/10.5281/zenodo.22992252)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23009189.svg)](https://doi.org/10.5281/zenodo.23009189)
 
 Exact Pauli decomposition of arbitrary complex matrices, at scales
 where materialising the full coefficient set is the binding
