@@ -58,11 +58,13 @@ keywords:
   - scientific Python
   - checkpoint and restart
 license: GPL-3.0-or-later
-version: 0.1.2
+version: 0.1.3
+# Version DOI: update after the 0.1.3 Zenodo software deposit.
+# 0.1.2 remains https://doi.org/10.5281/zenodo.22992252 until then.
 doi: "10.5281/zenodo.22992252"
 identifiers:
   - type: doi
     value: "10.5281/zenodo.22992252"
-    description: "This software version (0.1.2) on Zenodo"
+    description: "paulikit 0.1.2 on Zenodo (0.1.3 version DOI pending)"
 # Concept DOI (always resolves to the latest archived version):
 # 10.5281/zenodo.22992251

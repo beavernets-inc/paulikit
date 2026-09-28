@@ -9,6 +9,23 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-28
+
+### Fixed
+
+- **Author spelling.** Coauthor family name corrected from Nasouri to
+  Nasoori in `AUTHORS`, `CITATION.cff`, `pyproject.toml`, and the
+  Sphinx author string (`docs/conf.py`). Packaging / citation metadata
+  only; no change to algorithms, APIs, or measured behaviour.
+
+### Notes
+
+- Intended as a clean republish of the 0.1.2 feature set under corrected
+  author metadata. Prior PyPI releases `0.1.0`–`0.1.2` are to be removed
+  or yanked after this version is live (those filenames cannot be
+  reused). Zenodo software and measurements archives will be replaced
+  or versioned separately so deposited trees match the spelling.
+
 ## [0.1.2] - 2026-09-27
 
 ### Added
@@ -154,7 +171,8 @@ uploaded artifacts.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
 
-[Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.1.2...HEAD
+[Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.1.3...HEAD
+[0.1.3]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.3
 [0.1.2]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.2
 [0.1.1]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.1
 [0.1.0]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.0

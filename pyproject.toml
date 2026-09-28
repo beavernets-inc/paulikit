@@ -4,7 +4,7 @@ build-backend = "mesonpy"
 
 [project]
 name = "paulikit"
-version = "0.1.2"
+version = "0.1.3"
 description = "Pauli-basis decomposition of large operators: fast Walsh-Hadamard transform in C, bounded memory, multi-core"
 readme = "README.md"
 requires-python = ">=3.10"

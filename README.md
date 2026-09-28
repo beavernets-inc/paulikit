@@ -1,5 +1,6 @@
 # paulikit
 
+[![PyPI](https://img.shields.io/pypi/v/paulikit.svg)](https://pypi.org/project/paulikit/)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22992252.svg)](https://doi.org/10.5281/zenodo.22992252)
 
 Exact Pauli decomposition of arbitrary complex matrices, at scales
