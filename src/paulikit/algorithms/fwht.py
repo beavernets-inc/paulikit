@@ -2738,7 +2738,7 @@ def parallel_decompose(
 
 
 def parallel_decompose_arrays(
-    operator: NDArray[np.complexfloating] | NDArray[np.floating],
+    operator: NDArray[np.complexfloating] | NDArray[np.floating] | None = None,
     chunk_size: int | None = None,
     n_workers: int | None = None,
     atol: float = 1e-10,
@@ -2748,6 +2748,9 @@ def parallel_decompose_arrays(
     assume_dense: bool = False,
     eager_threads: bool = True,
     chunk_plan: dict | None = None,
+    operator_source: str | object = "resident",
+    spill_dir: str | Path | None = None,
+    max_resident_buckets: int = 2,
 ) -> Iterator[tuple[NDArray, NDArray, NDArray]]:
     """Multi-core decomposition yielding raw ``(x, z, coeff)`` arrays.
 
@@ -2845,6 +2848,15 @@ def parallel_decompose_arrays(
     pass ``False`` to restore the old lazy spin-up if that ever
     matters (e.g. profiling the pool's own startup behavior).
 
+    ``operator_source`` (default ``"resident"``): how the dense gather
+    is fed. ``"resident"`` keeps today's in-RAM XOR gather.
+    ``"bucketed"`` builds a ``DenseBucketedSource`` from ``operator``
+    (pass ``spill_dir`` to spill cold buckets to disk — without it,
+    buckets stay in RAM and peak footprint is not reduced). Pass an
+    already-built source object (duck-typed ``dim`` + ``gather_chunk``)
+    to skip array ownership entirely — the usual path for
+    ``DenseBucketedSource.from_complex128_file``. ``operator`` may be
+    ``None`` only when a source object is passed.
     """
     # NOTE: `autotune` is NOT imported here - see parallel_decompose's
     # own identical note. `_recommended_parallel_chunk_size` (called
@@ -2892,12 +2904,66 @@ def parallel_decompose_arrays(
             else "process"
         )
 
-    (
-        operator, is_sparse_input, dim, n_qubits, p_nz, q_nz, x_nz, values_nz
-    ) = _prepare_operator_for_fwht(
-        operator, assume_dense=assume_dense
-    )
-        active_x, inverse = _active_x_and_inverse(
+    # Duck-typed OperatorSource instance (e.g. DenseBucketedSource
+    # from a raw complex128 file). String modes keep the ndarray API.
+    source_obj = None
+    if (
+        operator_source is not None
+        and not isinstance(operator_source, str)
+        and hasattr(operator_source, "gather_chunk")
+        and hasattr(operator_source, "dim")
+    ):
+        source_obj = operator_source
+        dim = int(source_obj.dim)
+        n_qubits = int(round(np.log2(dim)))
+        if 2**n_qubits != dim:
+            raise ValueError(
+                f"operator_source.dim {dim} is not a power of two"
+            )
+        is_sparse_input = False
+        assume_dense = True
+        p_nz = q_nz = x_nz = values_nz = np.empty(0, dtype=np.intp)
+        if hasattr(source_obj, "chunk_size"):
+            src_cs = int(source_obj.chunk_size)
+            if chunk_size is None:
+                chunk_size = src_cs
+            elif int(chunk_size) != src_cs:
+                raise ValueError(
+                    f"chunk_size={chunk_size} must match "
+                    f"operator_source.chunk_size={src_cs}"
+                )
+    elif operator_source in ("resident", None):
+        if operator is None:
+            raise ValueError(
+                "operator is required when operator_source='resident'"
+            )
+        (
+            operator, is_sparse_input, dim, n_qubits, p_nz, q_nz, x_nz, values_nz
+        ) = _prepare_operator_for_fwht(
+            operator, assume_dense=assume_dense
+        )
+    elif operator_source == "bucketed":
+        if operator is None:
+            raise ValueError(
+                "operator is required when operator_source='bucketed'"
+            )
+        (
+            operator, is_sparse_input, dim, n_qubits, p_nz, q_nz, x_nz, values_nz
+        ) = _prepare_operator_for_fwht(
+            operator, assume_dense=True
+        )
+        if is_sparse_input:
+            raise ValueError(
+                "operator_source='bucketed' requires a dense ndarray"
+            )
+        assume_dense = True
+    else:
+        raise ValueError(
+            f"operator_source must be 'resident', 'bucketed', or an "
+            f"OperatorSource instance, got {operator_source!r}"
+        )
+
+    active_x, inverse = _active_x_and_inverse(
         x_nz, dim, is_fully_dense=assume_dense and not is_sparse_input
     )
     n_active = len(active_x)
@@ -2909,12 +2975,32 @@ def parallel_decompose_arrays(
     n_workers = _resolve_n_workers(n_workers)
 
     if chunk_size is None:
-        fixed_resident_bytes = _per_worker_resident_bytes(
-            operator, is_sparse_input, len(p_nz)
-        )
+        if operator is not None:
+            fixed_resident_bytes = _per_worker_resident_bytes(
+                operator, is_sparse_input, len(p_nz)
+            )
+        else:
+            # File-backed / prebuilt source: no full operator copy.
+            # Budget as if fixed cost is tiny so chunk_size stays
+            # memory-bound by the per-chunk gather tile alone.
+            fixed_resident_bytes = 0
         chunk_size = _recommended_parallel_chunk_size(
             dim, n_workers, fixed_resident_bytes
         )
+
+    if operator_source == "bucketed" and source_obj is None:
+        # Lazy: keep pathlib / OrderedDict off the resident hot path.
+        from paulikit.algorithms.dense_bucketed import DenseBucketedSource
+        source_obj = DenseBucketedSource.from_array(
+            operator,
+            chunk_size=chunk_size,
+            spill_dir=spill_dir,
+            max_resident_buckets=max_resident_buckets,
+        )
+        # Drop our reference when spilled so THIS frame does not keep
+        # the full matrix alive past build (caller's binding may still).
+        if spill_dir is not None:
+            operator = None
 
     n_workers = max(1, min(n_workers, max(1, (n_active + chunk_size - 1) // chunk_size)))
 
@@ -2960,7 +3046,10 @@ def parallel_decompose_arrays(
     # is requested at all sidesteps the question entirely, at the cost
     # of this fast path only applying to the common uncheckpointed case.
     #
-    if n_workers == 1 and checkpoint_path is None:
+    # Also gated on `source_obj is None`: the sequential helper still
+    # rebuilds DenseResident/SparseScatter from ``operator``, so a
+    # prebuilt / bucketed source must use the executor path.
+    if n_workers == 1 and checkpoint_path is None and source_obj is None:
         for chunk_x, chunk_z, chunk_coeff in _iter_chunked_coefficients(
             operator, is_sparse_input, active_x, inverse, p_nz, q_nz, values_nz,
             dim, n_qubits, n_active, z_indices, chunk_size, atol, checkpoint_path,
@@ -2983,25 +3072,28 @@ def parallel_decompose_arrays(
         FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait,
     )
 
-    is_fully_dense = (not is_sparse_input) and n_active == dim
-    if is_fully_dense:
-        operator_source = DenseResidentSource(operator)
+    if source_obj is not None:
+        operator_source = source_obj
     else:
-        # kind="quicksort" (NumPy's default), not "stable": every
-        # downstream use of SparseScatterSource is a np.searchsorted
-        # range query, which only needs sorted VALUES, not
-        # original-order preservation within a bucket of equal
-        # x-values - each (p, q, value) triple travels through
-        # `order` together and is later scattered into
-        # gathered_chunk[row, q] by q, so the physical (p, q) -> value
-        # correspondence is exact regardless of which same-valued entry
-        # lands first. Verified directly: reconstructing {(p, q): value}
-        # from the quicksort-ordered arrays is identical to the
-        # stable-sort ordering's reconstruction.
-        order = np.argsort(inverse, kind="quicksort")
-        operator_source = SparseScatterSource(
-            dim, inverse[order], q_nz[order], values_nz[order]
-        )
+        is_fully_dense = (not is_sparse_input) and n_active == dim
+        if is_fully_dense:
+            operator_source = DenseResidentSource(operator)
+        else:
+            # kind="quicksort" (NumPy's default), not "stable": every
+            # downstream use of SparseScatterSource is a np.searchsorted
+            # range query, which only needs sorted VALUES, not
+            # original-order preservation within a bucket of equal
+            # x-values - each (p, q, value) triple travels through
+            # `order` together and is later scattered into
+            # gathered_chunk[row, q] by q, so the physical (p, q) -> value
+            # correspondence is exact regardless of which same-valued entry
+            # lands first. Verified directly: reconstructing {(p, q): value}
+            # from the quicksort-ordered arrays is identical to the
+            # stable-sort ordering's reconstruction.
+            order = np.argsort(inverse, kind="quicksort")
+            operator_source = SparseScatterSource(
+                dim, inverse[order], q_nz[order], values_nz[order]
+            )
 
     chunk_starts = list(range(0, n_active, chunk_size))
     if chunk_plan is not None:
