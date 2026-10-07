@@ -206,14 +206,14 @@ if _coeffs_native is None:
         _coeffs_native = None
 
 try:
-    from paulikit._native import gather_native as _gather_native
-except ImportError:
-    _gather_native = None
-
-try:
     from paulikit._native import hermitian_check_native as _hermitian_check_native
 except ImportError:
     _hermitian_check_native = None
+
+from paulikit.algorithms.operator_source import (
+    DenseResidentSource,
+    SparseScatterSource,
+)
 
 # scipy.sparse is imported LAZILY (see _scipy_sparse_module below),
 # not at module load time like the extensions above. Measured
@@ -1078,7 +1078,10 @@ def _iter_chunked_coefficients(
     # parallel path, on identical dense random Hermitian input.
     is_fully_dense = (not is_sparse_input) and n_active == dim
     if is_fully_dense:
-        sorted_inverse = sorted_p_nz = sorted_q_nz = sorted_values = None
+        # DenseResidentSource: same XOR gather as the former inlined
+        # native/NumPy branches; kept behind OperatorSource so a later
+        # bucketed dense feeder can plug in without touching WHT.
+        operator_source = DenseResidentSource(operator)
     else:
         # inverse is sorted first so each chunk's nonzero entries
         # (p_nz[lo:hi], q_nz[lo:hi]) are a contiguous slice, found via
@@ -1089,11 +1092,13 @@ def _iter_chunked_coefficients(
         # x-values.
         order = np.argsort(inverse, kind="quicksort")
         sorted_inverse = inverse[order]
-        sorted_p_nz = p_nz[order]
         sorted_q_nz = q_nz[order]
         # The values follow the same permutation, so each chunk's slice
         # is contiguous and no per-chunk operator lookup is needed.
         sorted_values = values_nz[order]
+        operator_source = SparseScatterSource(
+            dim, sorted_inverse, sorted_q_nz, sorted_values
+        )
 
     chunk_starts = list(range(0, n_active, chunk_size))
     if chunk_plan is not None:
@@ -1115,31 +1120,9 @@ def _iter_chunked_coefficients(
         chunk_start = chunk_starts[chunk_index]
         chunk_end = min(chunk_start + chunk_size, n_active)
 
-        if is_fully_dense:
-            if _gather_native is not None:
-                gathered_chunk = _gather_native.gather_dense_chunk(
-                    operator, chunk_start, chunk_end - chunk_start
-                )
-            else:
-                x_values = np.arange(chunk_start, chunk_end)
-                q_range = z_indices[0]
-                p_indices = x_values[:, np.newaxis] ^ q_range[np.newaxis, :]
-                gathered_chunk = np.ascontiguousarray(
-                    operator[p_indices, q_range[np.newaxis, :]]
-                )
-        else:
-            lo = int(np.searchsorted(sorted_inverse, chunk_start))
-            hi = int(np.searchsorted(sorted_inverse, chunk_end))
-
-            gathered_chunk = np.zeros((chunk_end - chunk_start, dim), dtype=complex)
-            # A slice of the pre-extracted values, not a fresh operator
-            # lookup: the scipy fancy-index call this replaces cost 45.4us
-            # per chunk to fetch ~64 values at the N=150 shape - CSR index
-            # validation overhead, paid thousands of times.
-            gathered_values = sorted_values[lo:hi]
-            gathered_chunk[
-                sorted_inverse[lo:hi] - chunk_start, sorted_q_nz[lo:hi]
-            ] = gathered_values
+        gathered_chunk = operator_source.gather_chunk(
+            chunk_start, chunk_end - chunk_start
+        )
 
         transformed_chunk = _walsh_hadamard_transform_rows(
             gathered_chunk, overwrite_input=True
@@ -2142,12 +2125,7 @@ _parallel_worker_state: dict | None = None
 
 
 def _parallel_worker_init(
-    operator,
-    is_sparse_input: bool,
-    sorted_inverse: NDArray[np.intp],
-    sorted_p_nz: NDArray[np.intp],
-    sorted_q_nz: NDArray[np.intp],
-    sorted_values: NDArray[np.complexfloating],
+    operator_source,
     active_x: NDArray[np.intp],
     dim: int,
     n_qubits: int,
@@ -2160,6 +2138,10 @@ def _parallel_worker_init(
     process, stashing everything ``_parallel_worker_chunk`` needs in
     that process's own global state so per-task calls only need to
     pass the (tiny) chunk boundaries.
+
+    ``operator_source`` is a picklable ``OperatorSource`` (dense
+    resident or sparse scatter today; bucketed dense later). Workers
+    share its read-only buffers via the pickled initargs copy.
 
     ``pin_cpus``/``next_pin_index`` implement the CPU-pinning fix:
     each worker process atomically claims the next unused
@@ -2181,12 +2163,7 @@ def _parallel_worker_init(
     """
     global _parallel_worker_state
     _parallel_worker_state = {
-        "operator": operator,
-        "is_sparse_input": is_sparse_input,
-        "sorted_inverse": sorted_inverse,
-        "sorted_p_nz": sorted_p_nz,
-        "sorted_q_nz": sorted_q_nz,
-        "sorted_values": sorted_values,
+        "operator_source": operator_source,
         "active_x": active_x,
         "dim": dim,
         "n_qubits": n_qubits,
@@ -2268,61 +2245,12 @@ def _parallel_worker_chunk(
     dim = state["dim"]
     active_x = state["active_x"]
 
-    # FULLY DENSE fast path: skip the global sort-and-searchsorted
-    # gather entirely. When len(active_x) == dim, active_x is provably
-    # arange(dim) (see _active_x_and_inverse) and EVERY row/column of
-    # `operator` is nonzero, so gathered_chunk[row, q] = operator[p, q]
-    # for p = x ^ q (XOR is its own inverse) can be read directly via
-    # one fancy-index gather, with no dependency on the sorted_*
-    # arrays or the chunk's position within them at all. This replaces
-    # what was measured (on real dense random-Hermitian input) to be
-    # ~40-57% of total parallel_decompose_arrays time (the global
-    # argsort + per-chunk np.searchsorted + np.zeros-and-scatter) with
-    # a single gather whose cost scales with this chunk's own size,
-    # not the whole operator - verified bit-identical to the general
-    # path's output before being trusted (tests/test_fwht.py,
-    # verification/exhaustive_projection.py). Gated on
-    # `not is_sparse_input` too (not just len(active_x) == dim) so a
-    # scipy.sparse operator that happens to have every cell nonzero
-    # still uses CSR fancy indexing via the general path below, rather
-    # than this path's dense-ndarray-shaped indexing assumption.
-    if not state["is_sparse_input"] and len(active_x) == dim:
-        if _gather_native is not None:
-            # Compiled fast path: a tight C loop over the underlying
-            # doubles (gather.c) replacing NumPy's generic advanced-
-            # indexing machinery for this exact XOR-permutation read
-            # pattern. Measured a modest but real win (perf stat
-            # instructions:u, ~5-7% fewer instructions than the NumPy
-            # fallback below at dim=1024) - this stage is memory-bound
-            # (an unavoidable dim*dim scattered read, not per-call
-            # dispatch overhead), so a C kernel helps less here than it
-            # did for the WHT butterfly or coefficient emission, which
-            # were bounded by NumPy's per-stage Python overhead rather
-            # than the underlying memory traffic.
-            gathered_chunk = _gather_native.gather_dense_chunk(
-                state["operator"], chunk_start, chunk_end - chunk_start
-            )
-        else:
-            x_values = np.arange(chunk_start, chunk_end)
-            q_range = state["z_indices"][0]
-            p_indices = x_values[:, np.newaxis] ^ q_range[np.newaxis, :]
-            gathered_chunk = np.ascontiguousarray(
-                state["operator"][p_indices, q_range[np.newaxis, :]]
-            )
-    else:
-        sorted_inverse = state["sorted_inverse"]
-        lo = int(np.searchsorted(sorted_inverse, chunk_start))
-        hi = int(np.searchsorted(sorted_inverse, chunk_end))
-
-        gathered_chunk = np.zeros((chunk_end - chunk_start, dim), dtype=complex)
-        # A slice of the values extracted once in the parent, not a per
-        # chunk operator lookup - see _iter_chunked_coefficients. This
-        # runs in every worker on every chunk, so it is the hottest
-        # instance of the 45.4us-per-chunk scipy overhead.
-        gathered_values = state["sorted_values"][lo:hi]
-        gathered_chunk[
-            sorted_inverse[lo:hi] - chunk_start, state["sorted_q_nz"][lo:hi]
-        ] = gathered_values
+    # OperatorSource owns dense XOR-gather vs sparse nnz-scatter.
+    # Same math as the former inlined branches; the seam lets a later
+    # bucketed dense feeder plug in without touching WHT / IPC.
+    gathered_chunk = state["operator_source"].gather_chunk(
+        chunk_start, chunk_end - chunk_start
+    )
 
     transformed_chunk = _walsh_hadamard_transform_rows(gathered_chunk, overwrite_input=True)
 
@@ -2692,31 +2620,21 @@ def parallel_decompose(
 
     n_workers = max(1, min(n_workers, max(1, (n_active + chunk_size - 1) // chunk_size)))
 
-    # Same fully-dense fast path as parallel_decompose_arrays (see
-    # that function's own comment for the full rationale and the
-    # measurement behind it: this sort was ~40-57% of total time on
-    # dense random Hermitian input before being skipped there).
-    # _parallel_worker_chunk's fast path reads `operator` directly per
-    # chunk and never touches sorted_inverse/sorted_p_nz/sorted_q_nz/
-    # sorted_values in that case, so building them here - and then
-    # pickling them into every worker process via ProcessPoolExecutor's
-    # initargs - is pure waste for dense input, on top of the sort
-    # cost itself.
+    # Same OperatorSource construction as _iter_chunked_coefficients:
+    # dense resident XOR-gather, or sparse nnz scatter. Building the
+    # source once here (and pickling it into workers) replaces shipping
+    # operator + sorted_* arrays separately.
     is_fully_dense = (not is_sparse_input) and n_active == dim
     if is_fully_dense:
-        sorted_inverse = np.empty(0, dtype=inverse.dtype)
-        sorted_p_nz = np.empty(0, dtype=p_nz.dtype)
-        sorted_q_nz = np.empty(0, dtype=q_nz.dtype)
-        sorted_values = np.empty(0, dtype=values_nz.dtype)
+        operator_source = DenseResidentSource(operator)
     else:
         # kind="quicksort", not "stable" - see parallel_decompose_arrays's
         # own comment: no downstream use needs original-order
         # preservation within a bucket of equal x-values.
         order = np.argsort(inverse, kind="quicksort")
-        sorted_inverse = inverse[order]
-        sorted_p_nz = p_nz[order]
-        sorted_q_nz = q_nz[order]
-        sorted_values = values_nz[order]
+        operator_source = SparseScatterSource(
+            dim, inverse[order], q_nz[order], values_nz[order]
+        )
 
     chunk_starts = list(range(0, n_active, chunk_size))
     completed_indices, checkpoint_frames = _load_parallel_checkpoint(checkpoint_path)
@@ -2780,8 +2698,7 @@ def parallel_decompose(
         max_workers=n_workers,
         initializer=_parallel_worker_init,
         initargs=(
-            operator, is_sparse_input, sorted_inverse, sorted_p_nz, sorted_q_nz,
-            sorted_values,
+            operator_source,
             active_x, dim, n_qubits, z_indices, atol, pin_cpus, next_pin_index,
         ),
     ) as pool:
@@ -2927,6 +2844,7 @@ def parallel_decompose_arrays(
     free to remove (paulikit-manuscript/debug/SESSION_QA.md Phase 10);
     pass ``False`` to restore the old lazy spin-up if that ever
     matters (e.g. profiling the pool's own startup behavior).
+
     """
     # NOTE: `autotune` is NOT imported here - see parallel_decompose's
     # own identical note. `_recommended_parallel_chunk_size` (called
@@ -2979,7 +2897,7 @@ def parallel_decompose_arrays(
     ) = _prepare_operator_for_fwht(
         operator, assume_dense=assume_dense
     )
-    active_x, inverse = _active_x_and_inverse(
+        active_x, inverse = _active_x_and_inverse(
         x_nz, dim, is_fully_dense=assume_dense and not is_sparse_input
     )
     n_active = len(active_x)
@@ -3041,6 +2959,7 @@ def parallel_decompose_arrays(
     # own, already-correct checkpoint handling) whenever checkpointing
     # is requested at all sidesteps the question entirely, at the cost
     # of this fast path only applying to the common uncheckpointed case.
+    #
     if n_workers == 1 and checkpoint_path is None:
         for chunk_x, chunk_z, chunk_coeff in _iter_chunked_coefficients(
             operator, is_sparse_input, active_x, inverse, p_nz, q_nz, values_nz,
@@ -3066,29 +2985,13 @@ def parallel_decompose_arrays(
 
     is_fully_dense = (not is_sparse_input) and n_active == dim
     if is_fully_dense:
-        # FULLY DENSE input: _parallel_worker_chunk's fast path reads
-        # `operator` directly (see its own docstring) and never touches
-        # sorted_inverse/sorted_p_nz/sorted_q_nz/sorted_values - so
-        # building them here at all is pure waste. This global sort
-        # (previously unconditional) was measured to be ~40-57% of
-        # total parallel_decompose_arrays time on dense random
-        # Hermitian input even AFTER the worker-side fast path was
-        # added, because this setup step still ran regardless of
-        # whether any worker would ever read its output - skipping it
-        # entirely, not just cheapening it, is what actually removes
-        # that cost. Empty placeholders below are never read by the
-        # fast path; they exist only so _parallel_worker_init's shared
-        # state dict has a consistent shape for both branches.
-        sorted_inverse = np.empty(0, dtype=inverse.dtype)
-        sorted_p_nz = np.empty(0, dtype=p_nz.dtype)
-        sorted_q_nz = np.empty(0, dtype=q_nz.dtype)
-        sorted_values = np.empty(0, dtype=values_nz.dtype)
+        operator_source = DenseResidentSource(operator)
     else:
         # kind="quicksort" (NumPy's default), not "stable": every
-        # downstream use of sorted_inverse is a np.searchsorted range
-        # query (see _parallel_worker_chunk), which only needs sorted
-        # VALUES, not original-order preservation within a bucket of
-        # equal x-values - each (p, q, value) triple travels through
+        # downstream use of SparseScatterSource is a np.searchsorted
+        # range query, which only needs sorted VALUES, not
+        # original-order preservation within a bucket of equal
+        # x-values - each (p, q, value) triple travels through
         # `order` together and is later scattered into
         # gathered_chunk[row, q] by q, so the physical (p, q) -> value
         # correspondence is exact regardless of which same-valued entry
@@ -3096,10 +2999,9 @@ def parallel_decompose_arrays(
         # from the quicksort-ordered arrays is identical to the
         # stable-sort ordering's reconstruction.
         order = np.argsort(inverse, kind="quicksort")
-        sorted_inverse = inverse[order]
-        sorted_p_nz = p_nz[order]
-        sorted_q_nz = q_nz[order]
-        sorted_values = values_nz[order]
+        operator_source = SparseScatterSource(
+            dim, inverse[order], q_nz[order], values_nz[order]
+        )
 
     chunk_starts = list(range(0, n_active, chunk_size))
     if chunk_plan is not None:
@@ -3257,8 +3159,7 @@ def parallel_decompose_arrays(
         pin_cpus = _physical_core_representative_cpus()
 
         _parallel_worker_init(
-            operator, is_sparse_input, sorted_inverse, sorted_p_nz,
-            sorted_q_nz, sorted_values, active_x, dim, n_qubits,
+            operator_source, active_x, dim, n_qubits,
             z_indices, atol, None, None,
         )
         try:
@@ -3486,8 +3387,7 @@ def parallel_decompose_arrays(
         max_workers=n_workers,
         initializer=_parallel_worker_init,
         initargs=(
-            operator, is_sparse_input, sorted_inverse, sorted_p_nz, sorted_q_nz,
-            sorted_values,
+            operator_source,
             active_x, dim, n_qubits, z_indices, atol, pin_cpus, next_pin_index,
         ),
     ) as pool:
