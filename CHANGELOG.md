@@ -24,7 +24,9 @@ versions; see the README's Status section.
     `--chunk-size`).
 - **Docs.** Sphinx page `docs/dense_out_of_core.md`; tutorial, README,
   package layout, runtime-estimates, and API autodoc for
-  `operator_source` / `dense_input` / `dense_bucketed`.
+  `operator_source` / `dense_input` / `dense_bucketed`. Tutorial
+  section *Dense operators on disk (I/O)* walks layout-A file
+  generation, spill + drain, CLI, and optional PKCP result archive.
 
 ### Notes
 

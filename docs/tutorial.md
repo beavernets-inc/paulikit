@@ -39,7 +39,7 @@ pure Python / NumPy automatically otherwise. Published Linux wheels
 already include the transform kernels; see {doc}`installation` for
 meson options. Nothing in the small examples below depends on
 which path is active, but the large-scale recipes in
-[Fastest paths](#fastest-paths) do.
+[§7 Fastest paths](#fastest-paths) do.
 
 ## 1. Building a Hamiltonian
 
@@ -143,76 +143,6 @@ This is exactly the check `paulikit`'s own test suite runs against
 every fixture (see `tests/test_fwht.py`), and it's good practice to
 run it yourself whenever decomposing a new Hamiltonian you haven't
 validated before.
-
-## Fastest paths
-
-Two recipes cover the measured high-performance configurations.
-Prefer `executor="thread"` (or CLI `--executor thread` / `auto`) when
-the compiled `wht_kernel` modules are present.
-
-**Sparse / large-N (CLI) — threaded drain, chunk size 2.** Labels are
-not built; peak RSS stays tens of MiB at sizes a dense matrix cannot
-hold:
-
-```bash
-paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
-    --executor thread
-# optional: --n-workers N   # default = physical cores
-# optional: --write-chunks PATH  # PKCP stream writer (alias --checkpoint-path)
-# optional: --progress           # main-thread chunk ticks on stderr
-```
-
-**Dense fast path (library) — skip the sparsity scan.** Use when $H$
-is already a resident dense `ndarray`. The CLI does not expose
-`assume_dense`; call the array API directly:
-
-```python
-from paulikit.algorithms.fwht import parallel_decompose_arrays
-
-# H: dense complex128 array, shape (2**n, 2**n)
-for x, z, coeff in parallel_decompose_arrays(
-    H,
-    chunk_size=2,
-    assume_dense=True,
-    n_workers=1,           # or physical-core count for multi-core
-    executor="thread",
-):
-    ...
-```
-
-**Dense on disk (library / CLI) — do not load `dim×dim` into RAM.**
-When the dense matrix itself is the memory wall, keep it as a raw
-`complex128` blob (+ JSON sidecar) or a square `.npy`, then stream via
-`DenseBucketedSource.from_dense_file`. Full layout contract and
-examples: {doc}`dense_out_of_core`.
-
-```python
-from paulikit.algorithms.dense_bucketed import DenseBucketedSource
-from paulikit.algorithms.fwht import parallel_decompose_arrays
-
-src = DenseBucketedSource.from_dense_file(
-    "H.c128", meta="H.c128.json",
-    chunk_size=256, spill_dir="/tmp/H.buckets",
-)
-for x, z, coeff in parallel_decompose_arrays(
-    None, operator_source=src, chunk_size=src.chunk_size, executor="thread",
-):
-    ...
-```
-
-```bash
-paulikit decompose --operator-file H.c128 --operator-meta H.c128.json \
-    --parallel --chunk-size 256 --spill-dir /tmp/H.buckets
-```
-
-Publication measurements use dense qubits=13 and sparse $N=300$ with
-the resident dense / sparse knobs above. Measured figures and the
-protocol live in the companion measurements deposit, not in this
-tutorial.
-
-For labelled small operators, keep using `fwht_pauli_terms` as in
-§3. For large operators prefer `parallel_decompose_arrays` over
-collecting a full label dict.
 
 ## 5. Using the command-line interface
 
@@ -363,7 +293,7 @@ argument details on any of these.
 
 ## 6. Multi-core decomposition and the array-yielding API
 
-> **Start from [Fastest paths](#fastest-paths) for real work.** This
+> **Start from [§7 Fastest paths](#fastest-paths) for real work.** This
 > section explains the two library APIs underneath those recipes.
 > Throughput depends on which executor and build you use — see
 > "Which executor, and why it matters" below. The array-yielding path
@@ -457,3 +387,215 @@ reach, regardless of how fast its inner loop is.
 
 Measure your own workload rather than assuming either way — but the
 memory profile is a property of the design, not of tuning.
+
+## 7. Fastest paths
+
+Two recipes cover the measured high-performance configurations.
+Prefer `executor="thread"` (or CLI `--executor thread` / `auto`) when
+the compiled `wht_kernel` modules are present.
+
+**Sparse / large-N (CLI) — threaded drain, chunk size 2.** Labels are
+not built; peak RSS stays tens of MiB at sizes a dense matrix cannot
+hold:
+
+```bash
+paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
+    --executor thread
+# optional: --n-workers N   # default = physical cores
+# optional: --write-chunks PATH  # PKCP stream writer (alias --checkpoint-path)
+# optional: --progress           # main-thread chunk ticks on stderr
+```
+
+**Dense fast path (library) — skip the sparsity scan.** Use when $H$
+is already a resident dense `ndarray`. The CLI does not expose
+`assume_dense`; call the array API directly:
+
+```python
+from paulikit.algorithms.fwht import parallel_decompose_arrays
+
+# H: dense complex128 array, shape (2**n, 2**n)
+for x, z, coeff in parallel_decompose_arrays(
+    H,
+    chunk_size=2,
+    assume_dense=True,
+    n_workers=1,           # or physical-core count for multi-core
+    executor="thread",
+):
+    ...
+```
+
+**Dense on disk — step-by-step tutorial below.** When the dense matrix
+itself is the memory wall, keep $H$ as a file and stream it; do not
+call `np.load` on the full tile. See
+[§8 Dense operators on disk](#dense-operators-on-disk) and the reference
+page {doc}`dense_out_of_core`.
+
+Publication measurements use dense qubits=13 and sparse $N=300$ with
+the resident dense / sparse knobs above. Measured figures and the
+protocol live in the companion measurements deposit, not in this
+tutorial.
+
+For labelled small operators, keep using `fwht_pauli_terms` as in
+§3. For large operators prefer `parallel_decompose_arrays` over
+collecting a full label dict.
+
+(dense-operators-on-disk)=
+## 8. Dense operators on disk (I/O)
+
+This walkthrough builds a **layout A** dense input (raw row-major
+`complex128` + JSON sidecar), runs an out-of-core decomposition that
+**spills input buckets** to disk, optionally **writes Pauli results**
+as PKCP frames, and reads those frames back. Prefer a **local SSD**
+for spill and PKCP paths (network filesystems can dominate runtime).
+
+Full format contract (required sidecar fields, `.npy` layout B,
+rejected formats): {doc}`dense_out_of_core`.
+
+### Step 1 — Write the operator file (layout A)
+
+For sizes that fit in RAM while *writing*, build a Hermitian matrix
+and dump it with NumPy's `tofile` (binary, no header):
+
+```python
+import json
+from pathlib import Path
+import numpy as np
+
+n_qubits = 4          # demo size; raise carefully — |H| = 16 * 4**n bytes
+dim = 2**n_qubits
+rng = np.random.default_rng(0)
+raw = rng.standard_normal((dim, dim)) + 1j * rng.standard_normal((dim, dim))
+H = np.ascontiguousarray((raw + raw.conj().T) / 2, dtype=np.complex128)
+
+op_dir = Path("dense_demo")
+op_dir.mkdir(exist_ok=True)
+blob = op_dir / "H.c128"
+H.tofile(blob)
+
+meta = {
+    "format": "paulikit.dense_c128.v1",
+    "dim": dim,
+    "dtype": "complex128",
+    "layout": "row-major",
+    "endianness": "little",   # must match the host in v1
+    "n_qubits": n_qubits,
+    "codec": "identity",
+}
+Path(str(blob) + ".json").write_text(json.dumps(meta, indent=2))
+print(blob, "bytes", blob.stat().st_size)  # must equal dim*dim*16
+```
+
+**Larger tiles** (when you cannot hold $H$ and $H^\dagger$ while
+writing): stream **rows** of `complex128` with `fh.write(row.tobytes())`
+instead of materialising the full array. That file is a valid dense
+input for the FWHT path; if it is not Hermitian, pass
+`assume_hermitian=False` at drain time (see Step 3).
+
+**Layout B alternative:** `np.save("H.npy", H)` with square C-order
+`complex128` — no sidecar required. Same decompose steps with
+`--operator-file H.npy` / `from_dense_file("H.npy", ...)`.
+
+### Step 2 — Choose directories and `chunk_size`
+
+Three disk roles — do not conflate them:
+
+| Role | Typical path | What it is |
+|---|---|---|
+| Input blob | `dense_demo/H.c128` (+ `.json`) | Dense $H$ on disk |
+| Input spill | `dense_demo/buckets/` | Pass‑1 $x$-buckets (temporary working set) |
+| Result archive | `dense_demo/run.pkcp` | Optional PKCP Pauli chunks (output) |
+
+`chunk_size` is both the bucket height and the drain tile size. With
+today's Pass‑1 implementation, the matrix is re-read roughly once per
+bucket, so **very small** `chunk_size` (e.g. 2) at large $n$ means
+huge I/O. For demos, use a moderate value (e.g. 64–256 for tiny $n$;
+larger for big files). Prefer `max_resident_buckets=1` or `2` so peak
+RAM tracks one bucket, not all of them.
+
+### Step 3 — Decompose from disk (library)
+
+```python
+from paulikit.algorithms.dense_bucketed import DenseBucketedSource
+from paulikit.algorithms.fwht import (
+    parallel_decompose_arrays,
+    iter_checkpoint_chunks,
+)
+
+blob = "dense_demo/H.c128"
+spill = "dense_demo/buckets"
+pkcp = "dense_demo/run.pkcp"
+chunk_size = 64
+
+src = DenseBucketedSource.from_dense_file(
+    blob,
+    meta=blob + ".json",       # or omit if PATH.json exists beside the blob
+    chunk_size=chunk_size,
+    spill_dir=spill,
+    max_resident_buckets=1,
+)
+
+# Pass-1 has now written spill tiles under spill_dir.
+# Drain: no full H in RAM. Optional PKCP result write on the main thread.
+total_terms = 0
+for x, z, coeff in parallel_decompose_arrays(
+    None,
+    operator_source=src,
+    chunk_size=src.chunk_size,
+    n_workers=1,                 # or physical-core count
+    executor="thread",
+    assume_hermitian=True,       # False if the on-disk tile is not Hermitian
+    checkpoint_path=pkcp,        # omit to count/discard only
+):
+    total_terms += len(coeff)
+
+print("nonzero terms", total_terms)
+
+# Later / another process: stream results without reloading H
+for chunk_index, x, z, coeff in iter_checkpoint_chunks(pkcp):
+    ...  # filter / reduce; labels via terms_from_arrays on subsets only
+```
+
+### Step 4 — Same path from the CLI
+
+```bash
+paulikit decompose \
+  --operator-file dense_demo/H.c128 \
+  --operator-meta dense_demo/H.c128.json \
+  --parallel --chunk-size 64 \
+  --spill-dir dense_demo/buckets \
+  --max-resident-buckets 1 \
+  --executor thread --n-workers 1 \
+  --write-chunks dense_demo/run.pkcp \
+  --progress
+```
+
+Requires `--parallel` and `--chunk-size`. Skips the synthetic
+oscillator Hamiltonian. `--write-chunks` is the **result** archive;
+`--spill-dir` is **input** working space.
+
+### Step 5 — What “success” looks like
+
+- Sidecar validates (`dim` power of two, size `dim*dim*16`, matching
+  endianness).
+- Spill directory fills with `bucket_XXXXXX.c128` tiles during Pass‑1,
+  then the drain prints chunk / term counts (CLI) or your loop finishes
+  (library).
+- With `--write-chunks` / `checkpoint_path`, `iter_checkpoint_chunks`
+  replays symplectic `(x, z, coeff)` frames without touching `H.c128`
+  again.
+
+### Step 6 — Common pitfalls
+
+- **RSS while writing $H$:** building a Hermitian tile in RAM can peak
+  near $2\cdot|H|$ even though the later OOC drain stays small. Write
+  in one process; measure drain in a fresh process if you care about
+  peak RSS.
+- **`assume_hermitian=True` (default)** on a non-Hermitian file raises
+  on imaginary diagonal / identity-term mass — pass `False` or write a
+  Hermitian blob.
+- **`chunk_size=2` at large $n$:** fine for *resident* dense/sparse
+  drains in the recipes above; costly for *current* file-backed Pass‑1
+  until a single-pass scatter lands. See {doc}`dense_out_of_core`.
+- **Sparse operators:** do not densify into `.c128` — use the sparse
+  `--parallel` / CSR path instead.
+
