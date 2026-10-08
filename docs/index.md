@@ -9,6 +9,7 @@
 installation
 tutorial
 runtime_estimates
+dense_out_of_core
 background
 theory
 non_hermitian

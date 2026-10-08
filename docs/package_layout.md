@@ -16,6 +16,13 @@ src/paulikit/
                             (against the machine's measured cache
                             hierarchy) and the streaming-vs-dense
                             decision (against available memory).
+        operator_source.py   `gather_chunk` adapters (resident dense
+                            XOR gather, sparse nnz scatter).
+        dense_input.py       On-disk dense layouts A/B: validate raw
+                            `complex128` + sidecar JSON or `.npy`.
+        dense_bucketed.py    Opt-in spilled x-buckets and
+                            `from_dense_file` factory for out-of-core
+                            dense input (see dense_out_of_core.md).
     testing/
         __init__.py
         fixtures.py         Known-good Hamiltonians and their
@@ -48,8 +55,9 @@ tests/
     test_fixtures.py        Self-consistency checks for the fixtures.
     test_fwht.py             Correctness tests for algorithms/fwht.py.
     (and further test modules covering autotuning, checkpointing,
-    streaming, parallel decomposition, sparse input, and the native
-    kernels — see the `tests/` directory for the full list).
+    streaming, parallel decomposition, sparse input, dense bucketed /
+    file layouts, and the native kernels — see the `tests/` directory
+    for the full list).
 ```
 
 `hamiltonian.py` and `pauli_utils.py` sit at the package root (not
