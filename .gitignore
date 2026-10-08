@@ -28,7 +28,10 @@ config.status
 docs/_build/
 
 # Local agent plans/specs and git worktrees — never ship these.
+# (Global rule: plans/, docs/superpowers/, **/superpowers/ are internal.)
 plans/
+docs/superpowers/
+**/superpowers/
 .worktrees/
 
 # Lockfiles are deliberately not tracked: this is a library, not an
