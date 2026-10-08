@@ -150,15 +150,218 @@ class _ChunkProgress:
             self._open_cr = False
 
 
+def _cmd_decompose_operator_file(args, write_path):
+    """Dense out-of-core path: --operator-file + --parallel."""
+    if not getattr(args, "parallel", False):
+        print(
+            "--operator-file requires --parallel "
+            "(out-of-core dense uses parallel_decompose_arrays)",
+            file=sys.stderr,
+        )
+        return 1
+    if not args.chunk_size:
+        print("--operator-file requires --chunk-size", file=sys.stderr)
+        return 1
+    if getattr(args, "stream", False):
+        print(
+            "--operator-file cannot be combined with --stream "
+            "(use --parallel)",
+            file=sys.stderr,
+        )
+        return 1
+
+    from paulikit.algorithms.dense_bucketed import DenseBucketedSource
+    from paulikit.algorithms.dense_input import resolve_dense_file
+    from paulikit.algorithms.fwht import parallel_decompose_arrays
+
+    try:
+        spec = resolve_dense_file(
+            args.operator_file, meta=getattr(args, "operator_meta", None)
+        )
+    except (OSError, ValueError) as exc:
+        print(f"--operator-file: {exc}", file=sys.stderr)
+        return 1
+
+    spill_dir = getattr(args, "spill_dir", None)
+    print(
+        f"Operator file {spec.path} ({spec.layout}), "
+        f"dim={spec.dim} ({spec.n_qubits} qubits), "
+        f"chunk_size={args.chunk_size}"
+    )
+    if spill_dir is not None:
+        print(f"Spill directory: {spill_dir}")
+    if write_path is not None:
+        print(
+            f"Writing streamed chunks to {write_path} "
+            f"(symplectic x, z, coeff; resume-capable PKCP frames)"
+        )
+
+    try:
+        source = DenseBucketedSource.from_dense_file(
+            spec.path,
+            meta=spec.meta_path,
+            chunk_size=args.chunk_size,
+            spill_dir=spill_dir,
+            max_resident_buckets=getattr(args, "max_resident_buckets", 2),
+        )
+    except (OSError, ValueError) as exc:
+        print(f"--operator-file: {exc}", file=sys.stderr)
+        return 1
+
+    n_chunks_planned = (spec.dim + args.chunk_size - 1) // args.chunk_size
+    want_progress = bool(getattr(args, "progress", False))
+    progress = _ChunkProgress(n_chunks_planned) if want_progress else None
+
+    start = time.perf_counter()
+    total_terms = 0
+    n_chunks = 0
+    stream = parallel_decompose_arrays(
+        None,
+        chunk_size=args.chunk_size,
+        n_workers=args.n_workers,
+        atol=args.atol,
+        checkpoint_path=write_path,
+        executor=args.executor,
+        eager_threads=args.eager_threads,
+        operator_source=source,
+    )
+    if progress is not None:
+        for _x, _z, coeff in stream:
+            n_chunks += 1
+            total_terms += len(coeff)
+            progress.update(n_chunks, total_terms)
+        progress.finish(n_chunks, total_terms)
+    else:
+        for _x, _z, coeff in stream:
+            n_chunks += 1
+            total_terms += len(coeff)
+    elapsed = time.perf_counter() - start
+
+    print(
+        f"Decomposition time (parallel file, executor={args.executor}): "
+        f"{elapsed:.4f}s"
+    )
+    print(f"Chunks: {n_chunks}, nonzero Pauli terms: {total_terms}")
+    if args.show_terms:
+        print(
+            "(--show-terms not available with --parallel: this path "
+            "yields raw arrays and never builds labels; use "
+            "terms_from_arrays on the chunks you actually need)"
+        )
+    return 0
+
+
+def _cmd_decompose_operator_file(args, write_path):
+    """Dense file-backed OOC path (layouts A/B via from_dense_file)."""
+    if not getattr(args, "parallel", False):
+        print(
+            "--operator-file requires --parallel "
+            "(out-of-core dense uses parallel_decompose_arrays)",
+            file=sys.stderr,
+        )
+        return 1
+    if not args.chunk_size:
+        print("--operator-file requires --chunk-size", file=sys.stderr)
+        return 1
+    if getattr(args, "stream", False):
+        print(
+            "--operator-file cannot be combined with --stream "
+            "(use --parallel)",
+            file=sys.stderr,
+        )
+        return 1
+
+    from paulikit.algorithms.dense_bucketed import DenseBucketedSource
+    from paulikit.algorithms.dense_input import resolve_dense_file
+    from paulikit.algorithms.fwht import parallel_decompose_arrays
+
+    try:
+        spec = resolve_dense_file(
+            args.operator_file, meta=getattr(args, "operator_meta", None)
+        )
+    except (OSError, ValueError) as exc:
+        print(f"operator file error: {exc}", file=sys.stderr)
+        return 1
+
+    spill_dir = getattr(args, "spill_dir", None)
+    print(
+        f"operator-file={spec.path} layout={spec.layout} "
+        f"dim={spec.dim} ({spec.n_qubits} qubits) codec={spec.codec}"
+    )
+    if write_path is not None:
+        print(
+            f"Writing streamed chunks to {write_path} "
+            f"(symplectic x, z, coeff; resume-capable PKCP frames)"
+        )
+
+    try:
+        source = DenseBucketedSource.from_dense_file(
+            spec.path,
+            meta=spec.meta_path,
+            chunk_size=args.chunk_size,
+            spill_dir=spill_dir,
+            max_resident_buckets=getattr(args, "max_resident_buckets", 2),
+        )
+    except (OSError, ValueError) as exc:
+        print(f"failed to build bucketed source: {exc}", file=sys.stderr)
+        return 1
+
+    n_chunks_planned = (spec.dim + args.chunk_size - 1) // args.chunk_size
+    want_progress = bool(getattr(args, "progress", False))
+    progress = _ChunkProgress(n_chunks_planned) if want_progress else None
+
+    start = time.perf_counter()
+    total_terms = 0
+    n_chunks = 0
+    stream = parallel_decompose_arrays(
+        None,
+        chunk_size=args.chunk_size,
+        n_workers=args.n_workers,
+        atol=args.atol,
+        checkpoint_path=write_path,
+        executor=args.executor,
+        eager_threads=args.eager_threads,
+        operator_source=source,
+    )
+    if progress is not None:
+        for _x, _z, coeff in stream:
+            n_chunks += 1
+            total_terms += len(coeff)
+            progress.update(n_chunks, total_terms)
+        progress.finish(n_chunks, total_terms)
+    else:
+        for _x, _z, coeff in stream:
+            n_chunks += 1
+            total_terms += len(coeff)
+    elapsed = time.perf_counter() - start
+
+    print(
+        f"Decomposition time (parallel file-backed, "
+        f"executor={args.executor}): {elapsed:.4f}s"
+    )
+    print(f"Chunks: {n_chunks}, nonzero Pauli terms: {total_terms}")
+    if args.show_terms:
+        print(
+            "(--show-terms not available with --parallel: this path "
+            "yields raw arrays and never builds labels; use "
+            "terms_from_arrays on the chunks you actually need)"
+        )
+    return 0
+
+
 def cmd_decompose(args):
     """Build a synthetic N-oscillator Hamiltonian and Pauli-decompose it."""
-    n = args.n_oscillators
-    spring_constants = _default_spring_constants(n)
-    masses = _default_masses(n)
-
     write_path, err = _resolve_chunk_write_path(args)
     if err:
         return err
+
+    operator_file = getattr(args, "operator_file", None)
+    if operator_file is not None:
+        return _cmd_decompose_operator_file(args, write_path)
+
+    n = args.n_oscillators
+    spring_constants = _default_spring_constants(n)
+    masses = _default_masses(n)
 
     # --parallel builds the operator SPARSE. That is not an
     # optimisation detail: at 15 qubits a dense operator is 16 GiB and
@@ -440,21 +643,22 @@ def _positive_int(value: str) -> int:
 
 
 _DECOMPOSE_HELP = """\
-Demo/timing front end for the FWHT Pauli path: build a synthetic
-coupled-oscillator Hamiltonian for N (fixed, deterministic spring
-constants and masses — not a physical calibration), pad to a
+Demo/timing front end for the FWHT Pauli path: by default build a
+synthetic coupled-oscillator Hamiltonian for N (fixed, deterministic
+spring constants and masses — not a physical calibration), pad to a
 power-of-two dimension, decompose it, and print wall time plus
 nonzero term count.
 
-This subcommand does not load an arbitrary operator. For your own
-dense or sparse matrices, call the library APIs
-(fwht_pauli_terms, fwht_pauli_terms_iter, parallel_decompose_arrays,
-…). Default CLI input is dense; --parallel builds the Hamiltonian
-sparse so large N stay reachable.
+With --operator-file, skip the synthetic Hamiltonian and stream a
+dense on-disk operator (layout A: raw complex128 + sidecar JSON, or
+layout B: square complex128 .npy) through the out-of-core bucketed
+path. Requires --parallel and --chunk-size.
 
 Default path (no --stream / --parallel) builds one label->coefficient
 dict for the whole operator. Use --stream or --parallel when that
-dict (or a dense matrix) would not fit in memory.
+dict (or a dense matrix) would not fit in memory. Default CLI input
+is dense; --parallel without --operator-file builds the Hamiltonian
+sparse so large N stay reachable.
 
 Examples:
   paulikit decompose -n 4
@@ -463,6 +667,9 @@ Examples:
   paulikit decompose -n 150 --parallel --chunk-size 2 \\
       --write-chunks /tmp/n150.pkcp
   paulikit decompose -n 50 --stream --chunk-size 4 --show-terms
+  paulikit decompose --operator-file H.c128 --operator-meta H.c128.json \\
+      --parallel --chunk-size 256 --spill-dir /tmp/H.buckets
+  paulikit decompose --operator-file H.npy --parallel --chunk-size 256
 """
 
 _BENCHMARK_HELP = """\
@@ -529,7 +736,9 @@ def build_parser():
         formatter_class=HelpFormatter,
         usage=gnu_usage(
             "paulikit decompose",
-            "[-h] [-n N] [--atol ATOL] [--show-terms]",
+            "[-h] [-n N | --operator-file PATH]",
+            "[--operator-meta PATH] [--spill-dir DIR]",
+            "[--atol ATOL] [--show-terms]",
             "[--sparse-output] [--chunk-size CS] [--stream]",
             "[--parallel-labels] [--parallel]",
             "[--executor {auto,thread,process}] [--n-workers N]",
@@ -542,7 +751,33 @@ def build_parser():
         "--n-oscillators", "-n", type=_positive_int, default=2, metavar="N",
         help="Number of coupled oscillators (default: 2). Larger N means "
              "more qubits after padding and, usually, far more Pauli "
-             "terms.",
+             "terms. Ignored when --operator-file is set.",
+    )
+    decompose_parser.add_argument(
+        "--operator-file", type=str, default=None, metavar="PATH",
+        help="Dense on-disk operator instead of the synthetic Hamiltonian.\n"
+             "Layout A: raw row-major complex128 + sidecar JSON "
+             "(paulikit.dense_c128.v1).\n"
+             "Layout B: square C-order complex128 .npy.\n"
+             "Requires --parallel and --chunk-size. Streams via "
+             "DenseBucketedSource (spill buckets; never loads full H).",
+    )
+    decompose_parser.add_argument(
+        "--operator-meta", type=str, default=None, metavar="PATH",
+        help="Sidecar JSON for --operator-file layout A "
+             "(default: PATH.json next to the blob). Optional for .npy "
+             "(may carry sha256).",
+    )
+    decompose_parser.add_argument(
+        "--spill-dir", type=str, default=None, metavar="DIR",
+        help="With --operator-file, directory for Pass-1 bucket spill "
+             "files. Default: PATH.buckets next to the operator file. "
+             "Prefer a local SSD (not network FS).",
+    )
+    decompose_parser.add_argument(
+        "--max-resident-buckets", type=int, default=2, metavar="K",
+        help="With --operator-file, LRU size for spilled buckets kept in "
+             "RAM during gather (default: 2).",
     )
     decompose_parser.add_argument(
         "--atol", type=float, default=1e-10, metavar="ATOL",
