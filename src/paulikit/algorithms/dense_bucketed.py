@@ -148,19 +148,28 @@ class DenseBucketedSource:
         chunk_size: int,
         spill_dir=None,
         max_resident_buckets: int = 2,
+        data_offset: int = 0,
     ):
-        """Row-major ``complex128`` file of length ``dim*dim``."""
+        """Row-major ``complex128`` payload of length ``dim*dim``.
+
+        ``data_offset`` skips a leading header (e.g. ``.npy``); the
+        payload size check is ``file_size == data_offset + dim*dim*16``.
+        """
         if chunk_size < 1:
             raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
         if dim < 1:
             raise ValueError(f"dim must be >= 1, got {dim}")
+        if data_offset < 0:
+            raise ValueError(f"data_offset must be >= 0, got {data_offset}")
         path = Path(path)
-        expected_bytes = dim * dim * np.dtype(np.complex128).itemsize
+        payload_bytes = dim * dim * np.dtype(np.complex128).itemsize
+        expected_bytes = data_offset + payload_bytes
         actual_bytes = path.stat().st_size
         if actual_bytes != expected_bytes:
             raise ValueError(
                 f"{path} has {actual_bytes} bytes, expected "
                 f"{expected_bytes} for dim={dim} complex128"
+                + (f" with data_offset={data_offset}" if data_offset else "")
             )
         if spill_dir is None:
             spill_dir = path.with_suffix(path.suffix + ".buckets")
@@ -169,7 +178,7 @@ class DenseBucketedSource:
 
         def row_reader(p: int):
             with path.open("rb") as fh:
-                fh.seek(p * row_bytes)
+                fh.seek(data_offset + p * row_bytes)
                 raw = fh.read(row_bytes)
             if len(raw) != row_bytes:
                 raise ValueError(f"short read for row {p} from {path}")
@@ -181,6 +190,33 @@ class DenseBucketedSource:
             spill_dir=spill_dir,
             max_resident_buckets=max_resident_buckets,
             row_reader=row_reader,
+        )
+
+    @classmethod
+    def from_dense_file(
+        cls,
+        path,
+        *,
+        chunk_size: int,
+        meta=None,
+        spill_dir=None,
+        max_resident_buckets: int = 2,
+    ):
+        """Build from layout A (raw+JSON) or B (``.npy``); see ``dense_input``.
+
+        Always spills (file-backed input). Detects format, validates
+        metadata / header, then streams rows into bucket files.
+        """
+        from paulikit.algorithms.dense_input import resolve_dense_file
+
+        spec = resolve_dense_file(path, meta=meta)
+        return cls.from_complex128_file(
+            spec.path,
+            dim=spec.dim,
+            chunk_size=chunk_size,
+            spill_dir=spill_dir,
+            max_resident_buckets=max_resident_buckets,
+            data_offset=spec.data_offset,
         )
 
     @classmethod
