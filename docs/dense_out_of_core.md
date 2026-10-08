@@ -178,7 +178,9 @@ PKCP output are unchanged.
 
 ## Related docs
 
-- {doc}`tutorial` — fastest sparse/dense recipes and CLI overview
+- {doc}`tutorial` — step-by-step
+  {ref}`Dense operators on disk (I/O) <dense-operators-on-disk>`:
+  generate layout A/B, spill, drain, optional PKCP write/read
 - {doc}`runtime_estimates` — discard vs write vs materialise (sparse
   planning); dense *input* size is a separate constraint
 - {doc}`api/algorithms` — autodoc for `dense_input`, `dense_bucketed`,
