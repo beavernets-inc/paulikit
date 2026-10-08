@@ -162,8 +162,9 @@ paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
 # optional: --progress           # main-thread chunk ticks on stderr
 ```
 
-**Dense fast path (library) — skip the sparsity scan.** The CLI does
-not yet expose `assume_dense`; call the array API directly:
+**Dense fast path (library) — skip the sparsity scan.** Use when $H$
+is already a resident dense `ndarray`. The CLI does not expose
+`assume_dense`; call the array API directly:
 
 ```python
 from paulikit.algorithms.fwht import parallel_decompose_arrays
@@ -179,9 +180,35 @@ for x, z, coeff in parallel_decompose_arrays(
     ...
 ```
 
+**Dense on disk (library / CLI) — do not load `dim×dim` into RAM.**
+When the dense matrix itself is the memory wall, keep it as a raw
+`complex128` blob (+ JSON sidecar) or a square `.npy`, then stream via
+`DenseBucketedSource.from_dense_file`. Full layout contract and
+examples: {doc}`dense_out_of_core`.
+
+```python
+from paulikit.algorithms.dense_bucketed import DenseBucketedSource
+from paulikit.algorithms.fwht import parallel_decompose_arrays
+
+src = DenseBucketedSource.from_dense_file(
+    "H.c128", meta="H.c128.json",
+    chunk_size=256, spill_dir="/tmp/H.buckets",
+)
+for x, z, coeff in parallel_decompose_arrays(
+    None, operator_source=src, chunk_size=src.chunk_size, executor="thread",
+):
+    ...
+```
+
+```bash
+paulikit decompose --operator-file H.c128 --operator-meta H.c128.json \
+    --parallel --chunk-size 256 --spill-dir /tmp/H.buckets
+```
+
 Publication measurements use dense qubits=13 and sparse $N=300$ with
-these same knobs. Measured figures and the protocol live in the
-companion measurements deposit, not in this tutorial.
+the resident dense / sparse knobs above. Measured figures and the
+protocol live in the companion measurements deposit, not in this
+tutorial.
 
 For labelled small operators, keep using `fwht_pauli_terms` as in
 §3. For large operators prefer `parallel_decompose_arrays` over
@@ -207,12 +234,13 @@ Nonzero Pauli terms: 56
 and coefficient values are the part worth checking against your own
 run.)
 
-`paulikit decompose` builds a synthetic Hamiltonian internally (a
-fixed, deterministic — not physically calibrated — set of spring
-constants and masses that scale with $N$), so it's meant for quickly
-checking behavior and timing at a given size, not for physically
-meaningful results; use the library API (above) with your own
-parameters for real work.
+By default, `paulikit decompose` builds a synthetic Hamiltonian
+internally (a fixed, deterministic — not physically calibrated — set
+of spring constants and masses that scale with $N$), so that mode is
+meant for quickly checking behavior and timing at a given size, not
+for physically meaningful results. Pass `--operator-file` to stream
+your own dense on-disk operator instead (see {doc}`dense_out_of_core`),
+or use the library API (above) with your own parameters.
 
 `paulikit benchmark` sweeps multiple $N$ values and reports timing:
 
@@ -244,8 +272,13 @@ Decomposition time (parallel, executor=thread): ...
 Chunks: 5595, nonzero Pauli terms: 91652096
 ```
 
-Related flags for the same large-$N$ regime:
+Related flags for the same large-$N$ / file-backed regime:
 
+- `--operator-file PATH` — dense on-disk operator (raw `complex128` +
+  sidecar JSON, or square `complex128` `.npy`) instead of the
+  synthetic Hamiltonian. Requires `--parallel` and `--chunk-size`.
+  Companion flags: `--operator-meta`, `--spill-dir`,
+  `--max-resident-buckets`. Details: {doc}`dense_out_of_core`.
 - `--write-chunks PATH` — write each completed chunk as binary PKCP
   frames (symplectic `x`, `z`, `coeff`) from the **main drain thread
   only**. Without this flag the CLI counts terms and discards chunk
@@ -259,7 +292,8 @@ Related flags for the same large-$N$ regime:
   progress.
 - `--stream` — sequential chunked streaming via `fwht_pauli_terms_iter`
   (labels per chunk; requires `--chunk-size`). Use when you want
-  labelled dicts without the multi-core drain.
+  labelled dicts without the multi-core drain. Not combinable with
+  `--operator-file` (use `--parallel` for file-backed dense).
 
 For when discard vs write vs materialising a full dict turns into
 minutes or hours on modest hardware, see

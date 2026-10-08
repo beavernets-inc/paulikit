@@ -5,10 +5,17 @@ on modest hardware. Numbers below are **order-of-magnitude guidance**,
 anchored to published Zenodo measurements and local CLI checks on the
 same machine class — not a promise for every CPU, disk, or governor.
 
-The CLI `paulikit decompose` always builds the synthetic coupled-oscillator
-Hamiltonian. The same timing picture applies when you call
-`parallel_decompose_arrays` (or the streaming iterators) on a similar
-sparse workload from Python.
+By default the CLI `paulikit decompose` builds the synthetic
+coupled-oscillator Hamiltonian. The same timing picture applies when
+you call `parallel_decompose_arrays` (or the streaming iterators) on a
+similar sparse workload from Python.
+
+**Dense input is a separate constraint.** Streaming the Pauli *output*
+does not shrink a resident dense $2^n\times 2^n$ matrix. For operators
+that do not fit in RAM, use the out-of-core path
+(`--operator-file` / `from_dense_file`) documented in
+{doc}`dense_out_of_core` — Pass‑1 spill I/O then dominates planning,
+not the sparse discard numbers below.
 
 ## Reference hardware (modest / low-end class)
 
