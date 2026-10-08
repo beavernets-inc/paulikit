@@ -63,6 +63,9 @@ class DenseBucketedSource:
     Without ``spill_dir``, all buckets stay in RAM. With ``spill_dir``,
     build is one-bucket-at-a-time (peak ≈ one bucket + one operator row)
     and gathers reload from raw ``complex128`` tiles with a small LRU.
+
+    File-backed construction: :meth:`from_dense_file` (layouts A/B) or
+    :meth:`from_complex128_file`. See ``docs/dense_out_of_core.md``.
     """
 
     __slots__ = (
@@ -202,10 +205,32 @@ class DenseBucketedSource:
         spill_dir=None,
         max_resident_buckets: int = 2,
     ):
-        """Build from layout A (raw+JSON) or B (``.npy``); see ``dense_input``.
+        """Build a spilled source from a dense on-disk operator.
 
-        Always spills (file-backed input). Detects format, validates
-        metadata / header, then streams rows into bucket files.
+        Accepts layout A (raw row-major ``complex128`` + sidecar JSON
+        ``paulikit.dense_c128.v1``) or layout B (square C-order
+        ``complex128`` ``.npy``). Always spills — never loads the full
+        ``dim×dim`` matrix into RAM. Pass the result as
+        ``operator_source=`` to ``parallel_decompose_arrays``.
+
+        Parameters
+        ----------
+        path :
+            Operator blob (``.c128`` / raw, or ``.npy``).
+        chunk_size :
+            Bucket height / gather tile rows (must match the drain).
+        meta :
+            Sidecar JSON path for layout A (default: ``str(path)+".json"``).
+            Optional for ``.npy`` (may carry ``sha256``).
+        spill_dir :
+            Directory for Pass-1 bucket files (default: ``PATH.buckets``).
+            Prefer a local SSD.
+        max_resident_buckets :
+            LRU size for cold bucket tiles during gather (default 2).
+
+        See also
+        --------
+        paulikit.algorithms.dense_input.resolve_dense_file
         """
         from paulikit.algorithms.dense_input import resolve_dense_file
 

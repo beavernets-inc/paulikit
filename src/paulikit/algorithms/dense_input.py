@@ -191,7 +191,29 @@ def _read_npy_header(path: Path) -> tuple[int, int]:
 
 
 def resolve_dense_file(path, meta=None) -> DenseFileSpec:
-    """Detect layout A/B, validate, return a :class:`DenseFileSpec`."""
+    """Detect layout A/B, validate metadata or ``.npy`` header, return a spec.
+
+    Parameters
+    ----------
+    path :
+        Path to the raw ``complex128`` blob or to a ``.npy`` file.
+    meta :
+        Optional sidecar JSON. Required for raw layout A when the
+        default ``str(path)+".json"`` companion is absent. Optional for
+        ``.npy`` (may carry ``sha256`` / ``n_qubits``).
+
+    Returns
+    -------
+    DenseFileSpec
+        Resolved ``dim``, ``layout``, ``data_offset``, and paths.
+
+    Raises
+    ------
+    FileNotFoundError
+        Missing operator or required sidecar.
+    ValueError
+        Invalid format, dtype, endianness, size, or non-power-of-two dim.
+    """
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"operator file not found: {path}")
