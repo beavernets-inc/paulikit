@@ -175,12 +175,100 @@ PKCP output are unchanged.
 - Pass‑1 currently walks the matrix once per bucket (build cost scales
   with number of buckets × rows). Pick `chunk_size` as you would for
   a resident dense drain; very small chunks increase spill-file count.
+  See {ref}`dense-ooc-qa` below for why `chunk_size=2` at large $n$
+  is a Pass‑1 issue, not a drain issue, and what is planned next.
+
+(dense-ooc-qa)=
+## Q&A
+
+### Which path should I use?
+
+Three paths share the same drain math (`gather_chunk` → WHT →
+coefficients) but differ in how the operator is supplied:
+
+| Path | Needs full $H$ in RAM? | Parallel drain? | `chunk_size=2` |
+|---|---|---|---|
+| Dense fast (`assume_dense=True`) | Yes (~1 / 4 / 16 / 64 GiB at $n=13$–$16$) | Yes (`executor="thread"` / `auto` when kernels are built) | Fine — gather is from a resident array |
+| Disk OOC (`from_dense_file` / `--operator-file`) | No (Pass‑1 spill + LRU) | Yes (same drain) | Bad for **Pass‑1 today** (see below); moderate $C$ is fine |
+| Sparse / CSR | No dense $H$ | Yes | Fine — publication large-$N$ recipe |
+
+- **Dense fast** — $H$ already fits; skip the sparsity scan; C
+  `gather.c` XOR-gathers each chunk from the resident matrix.
+- **Disk OOC** — $H$ is the memory wall; keep it as a file. This page.
+- **Sparse** — do not densify into `.c128`; use the CSR /
+  `--parallel` path instead.
+
+`assume_dense=True` and `--operator-file` are **not** the same knob.
+The fast path needs a resident `ndarray`; the disk path builds a
+`DenseBucketedSource` and never loads `dim×dim`.
+
+### Is the dense fast path parallel? Compatible with disk I/O?
+
+**Parallel: yes.** `parallel_decompose_arrays(H, assume_dense=True,
+executor="thread", …)` partitions $x$-chunks across workers; each
+worker calls `DenseResidentSource.gather_chunk` (C `gather.c` when
+built) then the WHT / coefficient kernels with the GIL released.
+
+**Disk: no.** That path assumes $H$ is already mapped in RAM. File
+input uses `DenseBucketedSource.from_dense_file` instead — same drain
+after buckets exist, different Pass‑1 builder. You cannot point
+`assume_dense=True` at a file and get the resident C gather.
+
+At $n=15$–$16$ the dense-fast wall is simply **holding** $H$
+(16 GiB / 64 GiB). Disk OOC is for when that fails; then Pass‑1 — not
+drain parallelism — dominates until the builder below is fixed.
+
+### Why is `chunk_size=2` at $n=15$–$16$ impractical “today”?
+
+“Today” means the **current multi-pass Pass‑1** in
+`DenseBucketedSource._build_spilled`: for each bucket it re-reads
+every row of $H$ and scatters into that bucket. Number of buckets is
+$\lceil\mathrm{dim}/C\rceil$, so I/O scales like
+$(\mathrm{dim}/C)\cdot|H|$:
+
+| $n$ | $\|H\|$ | Buckets at $C=2$ | Pass‑1 I/O (order of) |
+|---|---|---|---|
+| 13 | 1 GiB | 4096 | ~4 TiB |
+| 14 | 4 GiB | 8192 | ~32 TiB |
+| 15 | 16 GiB | 16384 | ~256 TiB |
+| 16 | 64 GiB | 32768 | ~2 PiB |
+
+With a **moderate** $C$ (e.g. 256–4096) the same builder is heavy but
+finite — local ladder runs reached $n=13$–$14$ that way. After
+buckets exist, the **drain** can still use small chunks; the explosion
+is build cost, not WHT tile size. Resident dense / sparse drains with
+`chunk_size=2` are unaffected.
+
+### Is there a plan to fix that? How does it relate to the C kernels?
+
+Yes — two layers, algorithm first:
+
+1. **Single-pass Pass‑1** (Python or C). One sequential read of $H$;
+   each row scatters into the correct open bucket buffer(s) / spill
+   files. Target cost $\sim|H|$ bytes read once, not
+   $(\mathrm{dim}/C)\cdot|H|$. That is what makes $C=2$ at large $n$
+   realistic on disk. No change to drain math or PKCP.
+2. **Optional native scatter kernel** (new C/Cython, `nogil`). A tight
+   $p\oplus q \mapsto$ bucket-cell loop so the single pass is not
+   NumPy-mask bound — same *kind* of win `gather.c` gave the resident
+   fancy-index gather. This is **not** an extension of `gather.c`
+   (that kernel still assumes a full resident operator). Formats,
+   sidecar validation, LRU policy, and CLI stay in Python.
+
+What already lives in C and is **unchanged** by disk OOC: WHT
+butterfly, coefficient extraction, Hermiticity check, Pauli labels,
+and resident `gather.c`. Once a spill tile is in RAM, drain already
+rides those kernels. The missing native piece is **Pass‑1 scatter**,
+and only after (or together with) the single-pass redesign — porting
+today’s multi-pass NumPy loop to C would only shave constants on an
+impractical I/O shape.
 
 ## Related docs
 
 - {doc}`tutorial` — step-by-step
   {ref}`Dense operators on disk (I/O) <dense-operators-on-disk>`:
-  generate layout A/B, spill, drain, optional PKCP write/read
+  generate layout A/B, spill, drain, optional PKCP write/read, plus a
+  short path Q&A that points here for the full tables
 - {doc}`runtime_estimates` — discard vs write vs materialise (sparse
   planning); dense *input* size is a separate constraint
 - {doc}`api/algorithms` — autodoc for `dense_input`, `dense_bucketed`,

@@ -594,8 +594,37 @@ oscillator Hamiltonian. `--write-chunks` is the **result** archive;
   on imaginary diagonal / identity-term mass — pass `False` or write a
   Hermitian blob.
 - **`chunk_size=2` at large $n$:** fine for *resident* dense/sparse
-  drains in the recipes above; costly for *current* file-backed Pass‑1
-  until a single-pass scatter lands. See {doc}`dense_out_of_core`.
+  drains in [§7](#fastest-paths); costly for *current* file-backed
+  Pass‑1 until a single-pass scatter lands (see Q&A below).
 - **Sparse operators:** do not densify into `.c128` — use the sparse
   `--parallel` / CSR path instead.
+
+### Q&A — which path, and why “today”?
+
+Three paths share the same drain (`gather_chunk` → WHT → coefficients)
+but differ in how $H$ is supplied:
+
+| Path | Needs full $H$ in RAM? | Parallel drain? | `chunk_size=2` |
+|---|---|---|---|
+| Dense fast (`assume_dense=True`) | Yes (~1 / 4 / 16 / 64 GiB at $n=13$–$16$) | Yes | Fine — resident gather |
+| Disk OOC (this section / `--operator-file`) | No (Pass‑1 spill + LRU) | Yes | Bad for **Pass‑1 today** |
+| Sparse / CSR | No dense $H$ | Yes | Fine |
+
+- **Dense fast is parallel** (`executor="thread"` / `auto` when the
+  kernels are built) but **not disk-compatible**: it needs a resident
+  `ndarray` and uses C `gather.c`. You cannot point `assume_dense=True`
+  at a file.
+- **Disk OOC** (this walkthrough) keeps $H$ on disk; after Pass‑1
+  buckets exist, the same threaded drain runs. Formats / Pass‑1 /
+  LRU stay in Python; WHT and coeffs kernels already run once a tile
+  is in RAM.
+- **“Today”** means the current multi-pass Pass‑1 (re-read $H$ once
+  per bucket). At $C=2$ and $n=15$ that is hundreds of TiB of I/O —
+  not a drain limit. The planned fix is **single-pass Pass‑1** (one
+  sequential read), then optionally a **new** native scatter kernel
+  (sibling to `gather.c`, not an extension of it). Until that lands,
+  use a moderate `chunk_size` here (as in Steps 2–4).
+
+Full tables, I/O scaling, and kernel boundary notes:
+{ref}`dense-ooc-qa` in {doc}`dense_out_of_core`.
 
