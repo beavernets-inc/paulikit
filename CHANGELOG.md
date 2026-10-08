@@ -26,7 +26,10 @@ versions; see the README's Status section.
   package layout, runtime-estimates, and API autodoc for
   `operator_source` / `dense_input` / `dense_bucketed`. Tutorial
   section *Dense operators on disk (I/O)* walks layout-A file
-  generation, spill + drain, CLI, and optional PKCP result archive.
+  generation, spill + drain, CLI, optional PKCP, and a short path
+  Q&A (table + “today” / Pass‑1 plan). Dense OOC page Q&A expands
+  the same comparison and records the planned single-pass Pass‑1
+  (+ optional native scatter) vs today’s multi-pass builder.
 
 ### Notes
 
