@@ -13,6 +13,11 @@ chunk at a time, so peak resident memory is bounded by the chunk size
 rather than by the term count. The others return a complete result
 and are bounded by it; pick accordingly.
 
+When the dense *input* matrix itself does not fit in RAM, use
+``DenseBucketedSource.from_dense_file`` (or CLI ``--operator-file``)
+from ``paulikit.algorithms.dense_bucketed`` — see
+``docs/dense_out_of_core.md``.
+
 Hermitian and non-Hermitian input are equally supported and take the
 same transform. Declaring input Hermitian returns real rather than
 complex coefficients, and checks that assumption rather than trusting

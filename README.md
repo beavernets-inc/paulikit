@@ -31,6 +31,12 @@ time.
   An implementation requiring the caller to hold the dense
   $2^n \times 2^n$ operator needs 4 GiB, 16 GiB and 64 GiB
   respectively for the same three sizes.
+- **Out-of-core dense input (opt-in).** When the dense matrix itself
+  does not fit in RAM, stream a raw row-major `complex128` blob (+
+  JSON sidecar) or a square `.npy` through `DenseBucketedSource.from_dense_file`
+  / CLI `--operator-file` — Pass‑1 spills $x$-buckets to disk and the
+  existing gather → WHT drain is unchanged. See
+  [`docs/dense_out_of_core.md`](docs/dense_out_of_core.md).
 - **Exhaustive verification.** Every term is checked individually —
   not sampled — against an independently derived projection oracle.
 - **Checkpoint and restart / stream writer.** A binary chunk-framed
@@ -63,6 +69,7 @@ Requires Python >= 3.10; the only runtime dependency is NumPy.
 | [`docs/installation.md`](docs/installation.md) | Full build and install reference |
 | [`docs/tutorial.md`](docs/tutorial.md) | Step-by-step walkthrough |
 | [`docs/runtime_estimates.md`](docs/runtime_estimates.md) | When large runs take seconds vs hours |
+| [`docs/dense_out_of_core.md`](docs/dense_out_of_core.md) | Dense operators that do not fit in RAM |
 | [`docs/theory.md`](docs/theory.md) | Mathematical derivation |
 | [`docs/background.md`](docs/background.md) | Physical motivation |
 | [`docs/non_hermitian.md`](docs/non_hermitian.md) | Non-Hermitian operators |
@@ -156,8 +163,8 @@ reported Decomposition time) so quiet and progress starts share the
 same CPU warm-up. Workers and library APIs never emit progress.
 
 **Dense fast path (library) — skip the sparsity scan.** Use when the
-operator is a full dense `ndarray` (e.g. random Hermitian). The CLI
-does not yet expose `assume_dense`; call the array API directly:
+operator is a full dense `ndarray` in RAM (e.g. random Hermitian). The
+CLI does not expose `assume_dense`; call the array API directly:
 
 ```python
 from paulikit.algorithms.fwht import parallel_decompose_arrays
@@ -173,10 +180,37 @@ for x, z, coeff in parallel_decompose_arrays(
     ...
 ```
 
+**Dense on disk — out-of-core input.** When `dim×dim` itself does not
+fit, keep $H$ as raw `complex128` + JSON sidecar (or square `.npy`) and
+stream buckets:
+
+```bash
+paulikit decompose --operator-file H.c128 --operator-meta H.c128.json \
+    --parallel --chunk-size 256 --spill-dir /tmp/H.buckets --executor thread
+```
+
+```python
+from paulikit.algorithms.dense_bucketed import DenseBucketedSource
+from paulikit.algorithms.fwht import parallel_decompose_arrays
+
+src = DenseBucketedSource.from_dense_file(
+    "H.c128", meta="H.c128.json",
+    chunk_size=256, spill_dir="/tmp/H.buckets",
+)
+for x, z, coeff in parallel_decompose_arrays(
+    None, operator_source=src, chunk_size=src.chunk_size, executor="thread",
+):
+    ...
+```
+
+Layouts, sidecar schema, and spill guidance:
+[`docs/dense_out_of_core.md`](docs/dense_out_of_core.md).
+
 Publication measurements use dense qubits=13 and sparse N=300 with
-these same knobs (`chunk_size=2`, `assume_dense=True` on dense,
-`executor="thread"` / `auto` when kernels are present). See the
-companion measurements deposit for the protocol and frozen numbers.
+the resident dense / sparse knobs above (`chunk_size=2`,
+`assume_dense=True` on dense, `executor="thread"` / `auto` when kernels
+are present). See the companion measurements deposit for the protocol
+and frozen numbers.
 
 ### Command line (small examples)
 
@@ -239,6 +273,9 @@ src/paulikit/
     pauli_utils.py      Pauli-matrix helpers (label <-> matrix)
     algorithms/fwht.py  The decomposition algorithm
     algorithms/autotune.py  Cache-aware chunk sizing
+    algorithms/operator_source.py  gather_chunk adapters
+    algorithms/dense_input.py      On-disk dense layout A/B validation
+    algorithms/dense_bucketed.py   Spill buckets / from_dense_file
     testing/fixtures.py Known-good operators and expected outputs
     _native/            Optional compiled kernels, pure-Python fallback
     cli.py              Command-line interface
@@ -330,11 +367,12 @@ the version is 0.x and signatures may still change.
 Implemented and verified: the FWHT decomposition with optional
 compiled kernels (transform, coefficients, gather, Hermiticity check,
 labels, cache probe), sparsity-aware coefficients, streaming output
-with bounded memory, chunked and parallel execution with cache-aware
-auto-tuning, binary checkpoint/restart (including CLI `--write-chunks`),
-opt-in CLI `--progress`, GNU-style CLI help, runtime-estimate guidance
-for hour-scale sparse runs, and exhaustive verification to 91,652,096
-terms at 14 qubits.
+with bounded memory, opt-in out-of-core dense input
+(`from_dense_file` / CLI `--operator-file`), chunked and parallel
+execution with cache-aware auto-tuning, binary checkpoint/restart
+(including CLI `--write-chunks`), opt-in CLI `--progress`, GNU-style
+CLI help, runtime-estimate guidance for hour-scale sparse runs, and
+exhaustive verification to 91,652,096 terms at 14 qubits.
 
 Known gaps:
 

@@ -9,6 +9,28 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
+### Added
+
+- **Out-of-core dense input.** Stream a dense operator from disk without
+  holding `dim×dim` in RAM:
+  - Layout A: raw row-major `complex128` + sidecar JSON
+    (`paulikit.dense_c128.v1`).
+  - Layout B: square C-order `complex128` `.npy`.
+  - Library: `paulikit.algorithms.dense_input.resolve_dense_file`,
+    `DenseBucketedSource.from_dense_file` (spilled buckets → existing
+    `gather_chunk` drain).
+  - CLI: `paulikit decompose --operator-file` / `--operator-meta` /
+    `--spill-dir` / `--max-resident-buckets` (requires `--parallel` and
+    `--chunk-size`).
+- **Docs.** Sphinx page `docs/dense_out_of_core.md`; tutorial, README,
+  package layout, runtime-estimates, and API autodoc for
+  `operator_source` / `dense_input` / `dense_bucketed`.
+
+### Notes
+
+- Identity codec only in v1 (no default gzip/zstd on dense tiles).
+  Sparse operators stay on the CSR path. PKCP remains output-only.
+
 ## [0.1.3] - 2026-09-28
 
 ### Fixed
