@@ -34,8 +34,9 @@ time.
 - **Out-of-core dense input (opt-in).** When the dense matrix itself
   does not fit in RAM, stream a raw row-major `complex128` blob (+
   JSON sidecar) or a square `.npy` through `DenseBucketedSource.from_dense_file`
-  / CLI `--operator-file` — Pass‑1 spills $x$-buckets to disk and the
-  existing gather → WHT drain is unchanged. See
+  / CLI `--operator-file` — Pass‑1 memmaps $H$, bit-routes spill tiles
+  (native when built), and the existing gather → WHT drain is unchanged.
+  Decouple thin drain `chunk_size` from tall `spill_bucket_rows`. See
   [`docs/dense_out_of_core.md`](docs/dense_out_of_core.md).
 - **Exhaustive verification.** Every term is checked individually —
   not sampled — against an independently derived projection oracle.
@@ -182,11 +183,12 @@ for x, z, coeff in parallel_decompose_arrays(
 
 **Dense on disk — out-of-core input.** When `dim×dim` itself does not
 fit, keep $H$ as raw `complex128` + JSON sidecar (or square `.npy`) and
-stream buckets:
+spill buckets (prefer a fast local `--spill-dir`; Pass‑1 is write-bound):
 
 ```bash
 paulikit decompose --operator-file H.c128 --operator-meta H.c128.json \
-    --parallel --chunk-size 256 --spill-dir /tmp/H.buckets --executor thread
+    --parallel --chunk-size 2 --spill-bucket-rows 1024 \
+    --spill-dir /tmp/H.buckets --executor thread
 ```
 
 ```python
@@ -195,7 +197,7 @@ from paulikit.algorithms.fwht import parallel_decompose_arrays
 
 src = DenseBucketedSource.from_dense_file(
     "H.c128", meta="H.c128.json",
-    chunk_size=256, spill_dir="/tmp/H.buckets",
+    chunk_size=2, spill_bucket_rows=1024, spill_dir="/tmp/H.buckets",
 )
 for x, z, coeff in parallel_decompose_arrays(
     None, operator_source=src, chunk_size=src.chunk_size, executor="thread",
@@ -203,7 +205,7 @@ for x, z, coeff in parallel_decompose_arrays(
     ...
 ```
 
-Layouts, sidecar schema, and spill guidance:
+Layouts, sidecar schema, $R$ vs $C$, and performance notes:
 [`docs/dense_out_of_core.md`](docs/dense_out_of_core.md).
 
 Publication measurements use dense qubits=13 and sparse N=300 with
