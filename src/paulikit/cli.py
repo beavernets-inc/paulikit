@@ -203,6 +203,7 @@ def _cmd_decompose_operator_file(args, write_path):
             chunk_size=args.chunk_size,
             spill_dir=spill_dir,
             max_resident_buckets=getattr(args, "max_resident_buckets", 2),
+            spill_bucket_rows=getattr(args, "spill_bucket_rows", None),
         )
     except (OSError, ValueError) as exc:
         print(f"--operator-file: {exc}", file=sys.stderr)
@@ -294,6 +295,7 @@ def _cmd_decompose_operator_file(args, write_path):
             f"(symplectic x, z, coeff; resume-capable PKCP frames)"
         )
 
+    spill_bucket_rows = getattr(args, "spill_bucket_rows", None)
     try:
         source = DenseBucketedSource.from_dense_file(
             spec.path,
@@ -301,10 +303,17 @@ def _cmd_decompose_operator_file(args, write_path):
             chunk_size=args.chunk_size,
             spill_dir=spill_dir,
             max_resident_buckets=getattr(args, "max_resident_buckets", 2),
+            spill_bucket_rows=spill_bucket_rows,
         )
     except (OSError, ValueError) as exc:
         print(f"failed to build bucketed source: {exc}", file=sys.stderr)
         return 1
+
+    if spill_bucket_rows is not None or source.spill_bucket_rows != args.chunk_size:
+        print(
+            f"spill_bucket_rows={source.spill_bucket_rows} "
+            f"(drain chunk_size={args.chunk_size})"
+        )
 
     n_chunks_planned = (spec.dim + args.chunk_size - 1) // args.chunk_size
     want_progress = bool(getattr(args, "progress", False))
@@ -772,12 +781,21 @@ def build_parser():
         "--spill-dir", type=str, default=None, metavar="DIR",
         help="With --operator-file, directory for Pass-1 bucket spill "
              "files. Default: PATH.buckets next to the operator file. "
-             "Prefer a local SSD (not network FS).",
+             "Prefer a fast local SSD — Pass-1 is write-bound on the "
+             "spill volume (avoid HDD/network FS).",
     )
     decompose_parser.add_argument(
         "--max-resident-buckets", type=int, default=2, metavar="K",
-        help="With --operator-file, LRU size for spilled buckets kept in "
-             "RAM during gather (default: 2).",
+        help="With --operator-file, LRU size for cached drain slices "
+             "kept in RAM during gather (default: 2).",
+    )
+    decompose_parser.add_argument(
+        "--spill-bucket-rows", type=int, default=None, metavar="R",
+        help="With --operator-file, Pass-1 spill tile height. Must be a "
+             "power of two and a multiple of --chunk-size (default: same "
+             "as --chunk-size). Use a larger R with a small power-of-two "
+             "--chunk-size (e.g. 2) so Pass-1 re-reads H fewer times while "
+             "drain keeps thin WHT tiles.",
     )
     decompose_parser.add_argument(
         "--atol", type=float, default=1e-10, metavar="ATOL",
