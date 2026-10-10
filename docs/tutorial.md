@@ -444,9 +444,11 @@ collecting a full label dict.
 
 This walkthrough builds a **layout A** dense input (raw row-major
 `complex128` + JSON sidecar), runs an out-of-core decomposition that
-**spills input buckets** to disk, optionally **writes Pauli results**
-as PKCP frames, and reads those frames back. Prefer a **local SSD**
-for spill and PKCP paths (network filesystems can dominate runtime).
+**spills input buckets** to disk (memmap Pass‑1 + bit-indexed fill when
+the native extension is built), optionally **writes Pauli results** as
+PKCP frames, and reads those frames back. Prefer a **fast local volume**
+for spill and PKCP paths (USB enclosures and network FS often dominate
+Pass‑1 write time).
 
 Full format contract (required sidecar fields, `.npy` layout B,
 rejected formats): {doc}`dense_out_of_core`.
@@ -505,12 +507,14 @@ Three disk roles — do not conflate them:
 | Input spill | `dense_demo/buckets/` | Pass‑1 $x$-buckets (temporary working set) |
 | Result archive | `dense_demo/run.pkcp` | Optional PKCP Pauli chunks (output) |
 
-`chunk_size` is both the bucket height and the drain tile size. With
-today's Pass‑1 implementation, the matrix is re-read roughly once per
-bucket, so **very small** `chunk_size` (e.g. 2) at large $n$ means
-huge I/O. For demos, use a moderate value (e.g. 64–256 for tiny $n$;
-larger for big files). Prefer `max_resident_buckets=1` or `2` so peak
-RAM tracks one bucket, not all of them.
+`chunk_size` ($C$) is the **drain** tile; optional
+`spill_bucket_rows` ($R$, default: same as `chunk_size`) is the Pass‑1
+spill height. When spilling, $R$ must be a **power of two** and a
+multiple of $C$. Prefer a small drain tile (e.g. 2) with a larger $R$
+(e.g. 256–1024) so drain stays thin while Pass‑1 writes fewer tall
+spill files. Prefer `max_resident_buckets=1` or `2` so drain peak
+tracks a thin slice, not a tall spill tile. Put `--spill-dir` on a
+fast local volume — after the C fill, Pass‑1 is write-bound there.
 
 ### Step 3 — Decompose from disk (library)
 
@@ -524,12 +528,13 @@ from paulikit.algorithms.fwht import (
 blob = "dense_demo/H.c128"
 spill = "dense_demo/buckets"
 pkcp = "dense_demo/run.pkcp"
-chunk_size = 64
+chunk_size = 2  # drain; see spill_bucket_rows below
 
 src = DenseBucketedSource.from_dense_file(
     blob,
     meta=blob + ".json",       # or omit if PATH.json exists beside the blob
     chunk_size=chunk_size,
+    spill_bucket_rows=64,      # Pass-1 tile (demo); power of two, multiple of chunk_size
     spill_dir=spill,
     max_resident_buckets=1,
 )
@@ -561,7 +566,7 @@ for chunk_index, x, z, coeff in iter_checkpoint_chunks(pkcp):
 paulikit decompose \
   --operator-file dense_demo/H.c128 \
   --operator-meta dense_demo/H.c128.json \
-  --parallel --chunk-size 64 \
+  --parallel --chunk-size 2 --spill-bucket-rows 64 \
   --spill-dir dense_demo/buckets \
   --max-resident-buckets 1 \
   --executor thread --n-workers 1 \
@@ -593,9 +598,11 @@ oscillator Hamiltonian. `--write-chunks` is the **result** archive;
 - **`assume_hermitian=True` (default)** on a non-Hermitian file raises
   on imaginary diagonal / identity-term mass — pass `False` or write a
   Hermitian blob.
-- **`chunk_size=2` at large $n$:** fine for *resident* dense/sparse
-  drains in [§7](#fastest-paths); costly for *current* file-backed
-  Pass‑1 until a single-pass scatter lands (see Q&A below).
+- **`chunk_size=2` at large $n$:** fine for drain (and for resident
+  dense/sparse in [§7](#fastest-paths)). On disk, pair it with a
+  **larger** power-of-two `spill_bucket_rows` and a fast `--spill-dir`
+  — do not set spill height to 2 (many tiny files; worse Pass‑1 writes).
+  See Q&A below and {doc}`dense_out_of_core`.
 - **Sparse operators:** do not densify into `.c128` — use the sparse
   `--parallel` / CSR path instead.
 
@@ -607,24 +614,20 @@ but differ in how $H$ is supplied:
 | Path | Needs full $H$ in RAM? | Parallel drain? | `chunk_size=2` |
 |---|---|---|---|
 | Dense fast (`assume_dense=True`) | Yes (~1 / 4 / 16 / 64 GiB at $n=13$–$16$) | Yes | Fine — resident gather |
-| Disk OOC (this section / `--operator-file`) | No (Pass‑1 spill + LRU) | Yes | Bad for **Pass‑1 today** |
+| Disk OOC (this section / `--operator-file`) | No (Pass‑1 spill + slice gather) | Yes | Yes, with **large** `spill_bucket_rows` |
 | Sparse / CSR | No dense $H$ | Yes | Fine |
 
 - **Dense fast is parallel** (`executor="thread"` / `auto` when the
   kernels are built) but **not disk-compatible**: it needs a resident
   `ndarray` and uses C `gather.c`. You cannot point `assume_dense=True`
   at a file.
-- **Disk OOC** (this walkthrough) keeps $H$ on disk; after Pass‑1
-  buckets exist, the same threaded drain runs. Formats / Pass‑1 /
-  LRU stay in Python; WHT and coeffs kernels already run once a tile
-  is in RAM.
-- **“Today”** means the current multi-pass Pass‑1 (re-read $H$ once
-  per bucket). At $C=2$ and $n=15$ that is hundreds of TiB of I/O —
-  not a drain limit. The planned fix is **single-pass Pass‑1** (one
-  sequential read), then optionally a **new** native scatter kernel
-  (sibling to `gather.c`, not an extension of it). Until that lands,
-  use a moderate `chunk_size` here (as in Steps 2–4).
+- **Disk OOC** keeps $H$ on disk. Decouple **drain** `chunk_size`
+  (thin WHT tiles) from **`spill_bucket_rows`** (Pass‑1 tile height;
+  power of two and a multiple of `chunk_size`). Memmap Pass‑1 reads
+  each cell of $H$ once.
+- Do **not** set spill height to 2 just because drain uses 2 — that
+  makes many tiny spill files and worsens Pass‑1 write cost.
 
-Full tables, I/O scaling, and kernel boundary notes:
-{ref}`dense-ooc-qa` in {doc}`dense_out_of_core`.
+Full tables and go/no-go notes: {ref}`dense-ooc-qa` in
+{doc}`dense_out_of_core`.
 
