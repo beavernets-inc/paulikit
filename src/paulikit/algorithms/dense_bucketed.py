@@ -4,9 +4,15 @@
 """Bucketed / spill / file-backed dense OperatorSource (opt-in).
 
 Import this module only when constructing a bucketed dense source —
-not from ``fwht``'s default import path. Stdlib ``pathlib`` /
-``collections`` stay here so the resident/sparse hot path in
-``operator_source`` does not pay for them.
+not from ``fwht``'s default import path.
+
+Spill geometry (``spill_bucket_rows``) may be taller than the drain
+tile (``chunk_size``). Spilled Pass-1 requires power-of-two
+``spill_bucket_rows`` (and therefore ``chunk_size``) and bit-routes
+``q = p ⊕ (x_lo + r)`` via ``pass1_scatter_native`` when built.
+File-backed construction memmaps ``H`` so each cell is read once;
+``gather_chunk`` reads thin drain slices so drain peak tracks
+``chunk_size``.
 """
 
 from __future__ import annotations
@@ -18,8 +24,23 @@ from pathlib import Path
 import numpy as np
 
 
-def _bucket_height(dim: int, chunk_size: int, bucket_id: int) -> int:
-    return min(chunk_size, dim - bucket_id * chunk_size)
+_pass1_native_mod = False  # False = unset; then module or None
+
+
+def _pass1_native():
+    """Lazy optional import — avoid loading the extension until spill."""
+    global _pass1_native_mod
+    if _pass1_native_mod is False:
+        try:
+            from paulikit._native import pass1_scatter_native as mod
+            _pass1_native_mod = mod
+        except ImportError:
+            _pass1_native_mod = None
+    return _pass1_native_mod
+
+
+def _bucket_height(dim: int, bucket_rows: int, bucket_id: int) -> int:
+    return min(bucket_rows, dim - bucket_id * bucket_rows)
 
 
 def _bucket_path(spill_dir: Path, bucket_id: int) -> Path:
@@ -28,7 +49,12 @@ def _bucket_path(spill_dir: Path, bucket_id: int) -> Path:
 
 def _write_bucket(path: Path, bucket) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.ascontiguousarray(bucket, dtype=np.complex128).tofile(path)
+    arr = np.ascontiguousarray(bucket, dtype=np.complex128)
+    native = _pass1_native()
+    if native is not None:
+        native.write_c128_file(path, arr)
+    else:
+        arr.tofile(path)
 
 
 def _read_bucket(path: Path, n_rows: int, dim: int):
@@ -42,6 +68,25 @@ def _read_bucket(path: Path, n_rows: int, dim: int):
     return np.ascontiguousarray(flat.reshape(n_rows, dim))
 
 
+def _read_bucket_slice(path: Path, dim: int, row_offset: int, n_rows: int):
+    """Read ``n_rows`` consecutive gather-rows from a spill tile file."""
+    if row_offset < 0 or n_rows < 0:
+        raise ValueError(
+            f"row_offset={row_offset} and n_rows={n_rows} must be >= 0"
+        )
+    row_bytes = dim * np.dtype(np.complex128).itemsize
+    nbytes = n_rows * row_bytes
+    with Path(path).open("rb") as fh:
+        fh.seek(row_offset * row_bytes)
+        raw = fh.read(nbytes)
+    if len(raw) != nbytes:
+        raise ValueError(
+            f"short read from {path}: got {len(raw)} bytes, "
+            f"expected {nbytes} for rows [{row_offset}, {row_offset + n_rows})"
+        )
+    return np.frombuffer(raw, dtype=np.complex128).reshape(n_rows, dim).copy()
+
+
 def _scatter_row_into_bucket(
     bucket,
     *,
@@ -51,18 +96,72 @@ def _scatter_row_into_bucket(
     x_lo: int,
     x_hi: int,
 ) -> None:
+    """Boolean-mask scatter (reference / non-power-of-two resident path)."""
     xs = p ^ q_range
     mask = (xs >= x_lo) & (xs < x_hi)
     if np.any(mask):
         bucket[xs[mask] - x_lo, q_range[mask]] = row[mask]
 
 
+def _scatter_row_into_bucket_bit(
+    bucket,
+    *,
+    p: int,
+    row,
+    x_lo: int,
+    height: int,
+) -> None:
+    """Bit-indexed scatter for tiles with R = 2^k: q = p ⊕ (x_lo + r)."""
+    r = np.arange(height, dtype=np.intp)
+    q = p ^ (x_lo + r)
+    bucket[r, q] = row[q]
+
+
+def _is_power_of_two(n: int) -> bool:
+    # Hacker's Delight: power-of-two iff n > 0 and (n & (n - 1)) == 0.
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def _validate_spill_vs_chunk(
+    chunk_size: int,
+    spill_bucket_rows: int,
+    *,
+    bit_route: bool,
+) -> None:
+    if spill_bucket_rows < 1:
+        raise ValueError(
+            f"spill_bucket_rows must be >= 1, got {spill_bucket_rows}"
+        )
+    if spill_bucket_rows % chunk_size != 0:
+        raise ValueError(
+            f"spill_bucket_rows ({spill_bucket_rows}) must be a multiple "
+            f"of chunk_size ({chunk_size}) so drain tiles do not cross "
+            f"spill-file boundaries"
+        )
+    if not bit_route:
+        return
+    if not _is_power_of_two(spill_bucket_rows):
+        raise ValueError(
+            f"spill_bucket_rows must be a power of two (Pass-1 bit "
+            f"routing), got {spill_bucket_rows}"
+        )
+    if not _is_power_of_two(chunk_size):
+        raise ValueError(
+            f"chunk_size must be a power of two when spilling "
+            f"(required because spill_bucket_rows is a power of two and "
+            f"must be a multiple of chunk_size), got {chunk_size}"
+        )
+
+
 class DenseBucketedSource:
     """Dense gather via scatter into fixed-size x-buckets.
 
-    Without ``spill_dir``, all buckets stay in RAM. With ``spill_dir``,
-    build is one-bucket-at-a-time (peak ≈ one bucket + one operator row)
-    and gathers reload from raw ``complex128`` tiles with a small LRU.
+    Without ``spill_dir``, all buckets stay in RAM (height =
+    ``chunk_size``). With ``spill_dir``, Pass-1 writes one spill tile
+    at a time (height ``spill_bucket_rows``, default ``chunk_size``)
+    and ``gather_chunk`` reloads only the requested drain slice.
+    Spilled geometry requires power-of-two ``spill_bucket_rows`` and
+    ``chunk_size``.
 
     File-backed construction: :meth:`from_dense_file` (layouts A/B) or
     :meth:`from_complex128_file`. See ``docs/dense_out_of_core.md``.
@@ -77,6 +176,7 @@ class DenseBucketedSource:
         "_dim",
         "_max_resident_buckets",
         "_n_buckets",
+        "_spill_bucket_rows",
         "_spill_dir",
     )
 
@@ -90,6 +190,7 @@ class DenseBucketedSource:
         bucket_files,
         spill_dir,
         max_resident_buckets: int,
+        spill_bucket_rows: int | None = None,
     ):
         if chunk_size < 1:
             raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
@@ -97,8 +198,19 @@ class DenseBucketedSource:
             raise ValueError(
                 f"max_resident_buckets must be >= 1, got {max_resident_buckets}"
             )
+        spill_rows = (
+            int(chunk_size)
+            if spill_bucket_rows is None
+            else int(spill_bucket_rows)
+        )
+        _validate_spill_vs_chunk(
+            chunk_size,
+            spill_rows,
+            bit_route=(spill_dir is not None),
+        )
         self._dim = int(dim)
         self._chunk_size = int(chunk_size)
+        self._spill_bucket_rows = spill_rows
         self._n_buckets = int(n_buckets)
         self._buckets_ram = (
             list(buckets_ram)
@@ -112,7 +224,7 @@ class DenseBucketedSource:
         )
         self._spill_dir = Path(spill_dir) if spill_dir is not None else None
         self._max_resident_buckets = int(max_resident_buckets)
-        self._cache: OrderedDict[int, object] = OrderedDict()
+        self._cache: OrderedDict[tuple, object] = OrderedDict()
         self._cache_lock = threading.Lock()
 
     @classmethod
@@ -123,6 +235,7 @@ class DenseBucketedSource:
         *,
         spill_dir=None,
         max_resident_buckets: int = 2,
+        spill_bucket_rows: int | None = None,
     ):
         if operator.ndim != 2 or operator.shape[0] != operator.shape[1]:
             raise ValueError(
@@ -134,12 +247,14 @@ class DenseBucketedSource:
         dim = int(H.shape[0])
         if spill_dir is None:
             return cls._from_array_resident(H, chunk_size)
+        spill_rows = chunk_size if spill_bucket_rows is None else spill_bucket_rows
         return cls._build_spilled(
             dim=dim,
             chunk_size=chunk_size,
             spill_dir=Path(spill_dir),
             max_resident_buckets=max_resident_buckets,
-            row_reader=lambda p: H[p],
+            dense_operator=H,
+            spill_bucket_rows=spill_rows,
         )
 
     @classmethod
@@ -152,6 +267,7 @@ class DenseBucketedSource:
         spill_dir=None,
         max_resident_buckets: int = 2,
         data_offset: int = 0,
+        spill_bucket_rows: int | None = None,
     ):
         """Row-major ``complex128`` payload of length ``dim*dim``.
 
@@ -164,6 +280,7 @@ class DenseBucketedSource:
             raise ValueError(f"dim must be >= 1, got {dim}")
         if data_offset < 0:
             raise ValueError(f"data_offset must be >= 0, got {data_offset}")
+        spill_rows = chunk_size if spill_bucket_rows is None else spill_bucket_rows
         path = Path(path)
         payload_bytes = dim * dim * np.dtype(np.complex128).itemsize
         expected_bytes = data_offset + payload_bytes
@@ -177,23 +294,52 @@ class DenseBucketedSource:
         if spill_dir is None:
             spill_dir = path.with_suffix(path.suffix + ".buckets")
         spill_dir = Path(spill_dir)
+
+        try:
+            dense = np.memmap(
+                path,
+                dtype=np.complex128,
+                mode="r",
+                offset=int(data_offset),
+                shape=(dim, dim),
+                order="C",
+            )
+        except (ValueError, OSError, TypeError):
+            dense = None
+
+        if dense is not None:
+            try:
+                return cls._build_spilled(
+                    dim=dim,
+                    chunk_size=chunk_size,
+                    spill_dir=spill_dir,
+                    max_resident_buckets=max_resident_buckets,
+                    dense_operator=dense,
+                    spill_bucket_rows=spill_rows,
+                )
+            finally:
+                mmap = getattr(dense, "_mmap", None)
+                if mmap is not None:
+                    mmap.close()
+
         row_bytes = dim * np.dtype(np.complex128).itemsize
+        with path.open("rb") as fh:
 
-        def row_reader(p: int):
-            with path.open("rb") as fh:
-                fh.seek(data_offset + p * row_bytes)
-                raw = fh.read(row_bytes)
-            if len(raw) != row_bytes:
-                raise ValueError(f"short read for row {p} from {path}")
-            return np.frombuffer(raw, dtype=np.complex128).copy()
+            def row_reader(p: int, *, _fh=fh, _off=data_offset, _rb=row_bytes):
+                _fh.seek(_off + p * _rb)
+                raw = _fh.read(_rb)
+                if len(raw) != _rb:
+                    raise ValueError(f"short read for row {p} from {path}")
+                return np.frombuffer(raw, dtype=np.complex128).copy()
 
-        return cls._build_spilled(
-            dim=dim,
-            chunk_size=chunk_size,
-            spill_dir=spill_dir,
-            max_resident_buckets=max_resident_buckets,
-            row_reader=row_reader,
-        )
+            return cls._build_spilled(
+                dim=dim,
+                chunk_size=chunk_size,
+                spill_dir=spill_dir,
+                max_resident_buckets=max_resident_buckets,
+                row_reader=row_reader,
+                spill_bucket_rows=spill_rows,
+            )
 
     @classmethod
     def from_dense_file(
@@ -204,6 +350,7 @@ class DenseBucketedSource:
         meta=None,
         spill_dir=None,
         max_resident_buckets: int = 2,
+        spill_bucket_rows: int | None = None,
     ):
         """Build a spilled source from a dense on-disk operator.
 
@@ -218,15 +365,19 @@ class DenseBucketedSource:
         path :
             Operator blob (``.c128`` / raw, or ``.npy``).
         chunk_size :
-            Bucket height / gather tile rows (must match the drain).
+            Drain tile rows (WHT chunk). Prefer small power-of-two
+            values (e.g. 2) for cache locality / parallelism.
+        spill_bucket_rows :
+            Pass-1 spill tile height. Must be a power of two and a
+            multiple of ``chunk_size`` (default: ``chunk_size``).
         meta :
             Sidecar JSON path for layout A (default: ``str(path)+".json"``).
             Optional for ``.npy`` (may carry ``sha256``).
         spill_dir :
             Directory for Pass-1 bucket files (default: ``PATH.buckets``).
-            Prefer a local SSD.
+            Prefer a fast local volume (Pass-1 is write-bound there).
         max_resident_buckets :
-            LRU size for cold bucket tiles during gather (default 2).
+            LRU size for cached drain slices (default 2).
 
         See also
         --------
@@ -242,6 +393,7 @@ class DenseBucketedSource:
             spill_dir=spill_dir,
             max_resident_buckets=max_resident_buckets,
             data_offset=spec.data_offset,
+            spill_bucket_rows=spill_bucket_rows,
         )
 
     @classmethod
@@ -270,6 +422,7 @@ class DenseBucketedSource:
             bucket_files=None,
             spill_dir=None,
             max_resident_buckets=max(n_buckets, 1),
+            spill_bucket_rows=chunk_size,
         )
 
     @classmethod
@@ -280,30 +433,64 @@ class DenseBucketedSource:
         chunk_size: int,
         spill_dir: Path,
         max_resident_buckets: int,
-        row_reader,
+        row_reader=None,
+        dense_operator=None,
+        spill_bucket_rows: int | None = None,
     ):
+        if row_reader is None and dense_operator is None:
+            raise ValueError(
+                "_build_spilled requires row_reader or dense_operator"
+            )
+        spill_rows = chunk_size if spill_bucket_rows is None else int(spill_bucket_rows)
+        _validate_spill_vs_chunk(chunk_size, spill_rows, bit_route=True)
+
         spill_dir.mkdir(parents=True, exist_ok=True)
-        n_buckets = (dim + chunk_size - 1) // chunk_size
-        q_range = np.arange(dim)
+        n_buckets = (dim + spill_rows - 1) // spill_rows
         bucket_files = [None] * n_buckets
+        native = _pass1_native()
+
+        op = dense_operator
+        if op is not None and (
+            not isinstance(op, np.ndarray)
+            or op.dtype != np.complex128
+            or not op.flags["C_CONTIGUOUS"]
+        ):
+            # Never ascontiguousarray a memmap — that densifies H into RAM.
+            if not isinstance(op, np.memmap):
+                op = np.ascontiguousarray(op, dtype=np.complex128)
+
         for b in range(n_buckets):
-            height = _bucket_height(dim, chunk_size, b)
-            bucket = np.zeros((height, dim), dtype=np.complex128)
-            x_lo = b * chunk_size
-            x_hi = x_lo + height
-            for p in range(dim):
-                _scatter_row_into_bucket(
-                    bucket,
-                    p=p,
-                    row=np.asarray(row_reader(p), dtype=np.complex128),
-                    q_range=q_range,
-                    x_lo=x_lo,
-                    x_hi=x_hi,
-                )
+            height = _bucket_height(dim, spill_rows, b)
+            x_lo = b * spill_rows
+            tile = np.zeros((height, dim), dtype=np.complex128)
+
+            if op is not None and native is not None:
+                native.fill_bucket_from_operator(op, x_lo=x_lo, bucket=tile)
+            elif op is not None:
+                for p in range(dim):
+                    _scatter_row_into_bucket_bit(
+                        tile, p=p, row=op[p], x_lo=x_lo, height=height
+                    )
+            else:
+                for p in range(dim):
+                    row = np.asarray(row_reader(p), dtype=np.complex128)
+                    if native is not None:
+                        native.scatter_block_into_bucket(
+                            row.reshape(1, dim),
+                            p_start=p,
+                            x_lo=x_lo,
+                            bucket=tile,
+                        )
+                    else:
+                        _scatter_row_into_bucket_bit(
+                            tile, p=p, row=row, x_lo=x_lo, height=height
+                        )
+
             path = _bucket_path(spill_dir, b)
-            _write_bucket(path, bucket)
+            _write_bucket(path, tile)
             bucket_files[b] = path
-            del bucket
+            del tile
+
         return cls(
             dim=dim,
             chunk_size=chunk_size,
@@ -312,6 +499,7 @@ class DenseBucketedSource:
             bucket_files=bucket_files,
             spill_dir=spill_dir,
             max_resident_buckets=max_resident_buckets,
+            spill_bucket_rows=spill_rows,
         )
 
     @property
@@ -323,6 +511,10 @@ class DenseBucketedSource:
         return self._chunk_size
 
     @property
+    def spill_bucket_rows(self) -> int:
+        return self._spill_bucket_rows
+
+    @property
     def spilled(self) -> bool:
         return self._spill_dir is not None
 
@@ -332,48 +524,67 @@ class DenseBucketedSource:
                 f"chunk_start={chunk_start} must be a multiple of "
                 f"chunk_size={self._chunk_size}"
             )
-        bucket_id = chunk_start // self._chunk_size
-        if bucket_id < 0 or bucket_id >= self._n_buckets:
+        if n_rows < 0 or chunk_start < 0 or chunk_start + n_rows > self._dim:
+            raise ValueError(
+                f"chunk [{chunk_start}, {chunk_start + n_rows}) out of "
+                f"range for dim={self._dim}"
+            )
+        if n_rows == 0:
+            return np.empty((0, self._dim), dtype=np.complex128)
+
+        spill_id = chunk_start // self._spill_bucket_rows
+        row_in_spill = chunk_start - spill_id * self._spill_bucket_rows
+        if spill_id < 0 or spill_id >= self._n_buckets:
             raise ValueError(
                 f"chunk_start={chunk_start} out of range for dim={self._dim}"
             )
-        height = _bucket_height(self._dim, self._chunk_size, bucket_id)
-        if n_rows != height:
+        height = _bucket_height(self._dim, self._spill_bucket_rows, spill_id)
+        if row_in_spill + n_rows > height:
             raise ValueError(
-                f"n_rows={n_rows} does not match bucket "
-                f"{bucket_id} height {height}"
+                f"drain chunk [{chunk_start}, {chunk_start + n_rows}) "
+                f"crosses spill tile {spill_id} boundary "
+                f"(tile rows [{spill_id * self._spill_bucket_rows}, "
+                f"{spill_id * self._spill_bucket_rows + height}))"
             )
-        return np.ascontiguousarray(self._load_bucket(bucket_id, height))
 
-    def _load_bucket(self, bucket_id: int, height: int):
-        ram = self._buckets_ram[bucket_id]
+        ram = self._buckets_ram[spill_id]
         if ram is not None:
-            return ram
-        # ThreadPoolExecutor shares one source; protect the LRU.
-        # File I/O stays outside the lock so concurrent misses can
-        # read different buckets in parallel.
+            return np.ascontiguousarray(ram[row_in_spill : row_in_spill + n_rows])
+
+        return np.ascontiguousarray(
+            self._load_slice(spill_id, height, row_in_spill, n_rows)
+        )
+
+    def _load_slice(self, spill_id: int, height: int, row_offset: int, n_rows: int):
+        key = (spill_id, row_offset, n_rows)
         with self._cache_lock:
-            if bucket_id in self._cache:
-                self._cache.move_to_end(bucket_id)
-                return self._cache[bucket_id]
-            path = self._bucket_files[bucket_id]
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
+            path = self._bucket_files[spill_id]
         if path is None:
-            raise RuntimeError(f"bucket {bucket_id} has no RAM or file backing")
-        bucket = _read_bucket(Path(path), height, self._dim)
+            raise RuntimeError(f"bucket {spill_id} has no RAM or file backing")
+
+        if row_offset == 0 and n_rows == height:
+            slice_ = _read_bucket(Path(path), height, self._dim)
+        else:
+            slice_ = _read_bucket_slice(Path(path), self._dim, row_offset, n_rows)
+
         with self._cache_lock:
-            existing = self._cache.get(bucket_id)
+            existing = self._cache.get(key)
             if existing is not None:
-                self._cache.move_to_end(bucket_id)
+                self._cache.move_to_end(key)
                 return existing
-            self._cache[bucket_id] = bucket
+            self._cache[key] = slice_
             while len(self._cache) > self._max_resident_buckets:
                 self._cache.popitem(last=False)
-            return bucket
+            return slice_
 
     def __getstate__(self):
         return {
             "dim": self._dim,
             "chunk_size": self._chunk_size,
+            "spill_bucket_rows": self._spill_bucket_rows,
             "n_buckets": self._n_buckets,
             "buckets_ram": self._buckets_ram,
             "bucket_files": [
@@ -386,6 +597,9 @@ class DenseBucketedSource:
     def __setstate__(self, state):
         self._dim = int(state["dim"])
         self._chunk_size = int(state["chunk_size"])
+        self._spill_bucket_rows = int(
+            state.get("spill_bucket_rows", state["chunk_size"])
+        )
         self._n_buckets = int(state["n_buckets"])
         self._buckets_ram = list(state["buckets_ram"])
         self._bucket_files = [
