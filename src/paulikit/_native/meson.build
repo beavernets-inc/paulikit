@@ -179,6 +179,26 @@ if not wht_opt.disabled() and have_cython and have_c
       install: true,
       subdir: 'paulikit/_native',
     )
+
+    # Pass-1 spill scatter (bit-indexed, optional OpenMP over p-blocks).
+    # Same C+Cython dependency set as gather; OpenMP is best-effort so
+    # a toolchain without it still builds a correct serial kernel.
+    omp_dep = dependency('openmp', required: false)
+    if not omp_dep.found()
+      message('paulikit: pass1_scatter_native building without OpenMP')
+    endif
+
+    py.extension_module(
+      'pass1_scatter_native',
+      [
+        'pass1_scatter_native.pyx',
+        'pass1_scatter.c',
+      ],
+      include_directories: include_directories('.', np_include_gather, is_system: true),
+      dependencies: omp_dep,
+      install: true,
+      subdir: 'paulikit/_native',
+    )
   endif
 endif
 

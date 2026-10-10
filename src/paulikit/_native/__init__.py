@@ -12,6 +12,8 @@ in ``meson.options``::
                                              index emission
                  ``coeffs_native_v3``        same, -march=x86-64-v3
                  ``gather_native``           dense XOR-row gather
+                 ``pass1_scatter_native``    Pass-1 spill bit-scatter
+                                             + large POSIX spill write
                  ``hermitian_check_native``  fused Hermiticity check
     native       ``pauli_label_native``           serial Pauli label strings
                  ``pauli_label_parallel_native``  oneTBB fill (optional)
