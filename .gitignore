@@ -39,3 +39,8 @@ docs/superpowers/
 # constrain downstreams without benefiting them.
 uv.lock
 poetry.lock
+
+# Local dense OOC spill / write microbench dirs (never ship)
+.spills_bench/
+.write_micro/
+.write_micro2/
