@@ -20,9 +20,9 @@ src/paulikit/
                             XOR gather, sparse nnz scatter).
         dense_input.py       On-disk dense layouts A/B: validate raw
                             `complex128` + sidecar JSON or `.npy`.
-        dense_bucketed.py    Opt-in spilled x-buckets and
-                            `from_dense_file` factory for out-of-core
-                            dense input (see dense_out_of_core.md).
+        dense_bucketed.py    Opt-in spilled x-buckets, memmap Pass‑1,
+                            and `from_dense_file` for out-of-core dense
+                            input (see dense_out_of_core.md).
     testing/
         __init__.py
         fixtures.py         Known-good Hamiltonians and their
@@ -39,6 +39,7 @@ src/paulikit/
                             - `wht_kernel`: `wht_native` /
                               `wht_native_v3`, `coeffs_native` /
                               `coeffs_native_v3`, `gather_native`,
+                              `pass1_scatter_native`,
                               `hermitian_check_native`
                             - `native`: serial `pauli_label_native`
                               (Cython/C); optional

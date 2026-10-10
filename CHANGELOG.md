@@ -27,9 +27,30 @@ versions; see the README's Status section.
   `operator_source` / `dense_input` / `dense_bucketed`. Tutorial
   section *Dense operators on disk (I/O)* walks layout-A file
   generation, spill + drain, CLI, optional PKCP, and a short path
-  Q&A (table + “today” / Pass‑1 plan). Dense OOC page Q&A expands
-  the same comparison and records the planned single-pass Pass‑1
-  (+ optional native scatter) vs today’s multi-pass builder.
+  Q&A (table + “today” / Pass‑1 plan). Dense OOC page Q&A expands the
+  path comparison. **Decoupled spill geometry:** `spill_bucket_rows` /
+  `--spill-bucket-rows` (Pass‑1 tile) may exceed drain `chunk_size`
+  (must be a power of two and a multiple of `chunk_size`); drain
+  `gather_chunk` reads thin slices from tall spill files.
+- **Pass‑1 bit-indexed C scatter** (`pass1_scatter_native`): OpenMP-
+  scheduled fill with `q = p ⊕ (x_lo+r)` when `R = 2^k`; one-touch
+  fill from a dense array or memmap so each operator cell is read
+  once across all spill tiles (falls back to a NumPy bit route if the
+  extension is absent). Spill tiles are written with large POSIX
+  `write()` chunks (`write_c128_file`) instead of `ndarray.tofile`.
+
+### Removed
+
+- **`pass1_window_buckets` / `--pass1-window-buckets`.** Memmap /
+  one-touch Pass‑1 made windowing a no-op for wall-clock (only extra
+  RAM). Pass‑1 now fills and writes one spill tile at a time.
+
+### Changed
+
+- **Dense OOC docs** (`dense_out_of_core`, tutorial §8, README):
+  document memmap Pass‑1, `pass1_scatter_native`, power-of-two $R$,
+  decoupled $C$ vs $R$, and write-bound spill guidance (including an
+  $n=14$ order-of-magnitude timing).
 
 ### Notes
 
