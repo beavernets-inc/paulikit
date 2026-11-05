@@ -5,6 +5,11 @@ on modest hardware. Numbers below are **order-of-magnitude guidance**,
 anchored to published Zenodo measurements and local CLI checks on the
 same machine class — not a promise for every CPU, disk, or governor.
 
+The cited measurements predate 0.1.4, which corrected the oscillator
+Hamiltonian; their term counts (for example $1\,470\,038\,016$ at
+N=300) are from the earlier matrix. The corrected one has about 1%
+fewer terms at N=300 ($1\,457\,121\,280$), so the estimates stand.
+
 The CLI `paulikit decompose` always builds the synthetic coupled-oscillator
 Hamiltonian. The same timing picture applies when you call
 `parallel_decompose_arrays` (or the streaming iterators) on a similar

@@ -89,6 +89,15 @@ provenance). All errors are floating-point noise floor (~1e-17 to
 1e-20), not approximation — this is an exact independent verification,
 not a heuristic.
 
+**Note (0.1.4):** this table and §5 were measured on the Hamiltonian
+`build_hamiltonian` produced before 0.1.4, which attached every
+coupling spring to oscillators 0 and 1. The verification method is
+unaffected: it checks the decomposition of whatever matrix it is
+given. Re-run on the corrected Hamiltonian (`pytest -m slow
+tests/test_exhaustive_verification.py`): N=50 1,231,872 terms
+(max abs error 1.04e-17), N=80 6,346,752 (2.78e-17), N=100
+19,910,656 (6.94e-18), N=150 90,431,488 (1.04e-17), all passing.
+
 | N (oscillators) | qubits | dim | H.nnz | # terms | method | max abs error | passed |
 |---|---|---|---|---|---|---|---|
 | 20 | 8 | 256 | 800 | 24,448 | projection + PennyLane (dual oracle) | 1.39e-17 | yes, both |

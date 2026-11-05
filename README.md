@@ -26,8 +26,9 @@ time.
 - **Streaming output.** Peak resident memory is bounded by the chunk
   size, not by the term count, so it stays roughly flat as the problem
   grows: measured peak resident set is 72 MiB for a 14-qubit
-  decomposition yielding 91,652,096 terms, 89 MiB at 15 qubits
-  (326,134,272 terms) and 123 MiB at 16 qubits (1,470,021,632 terms).
+  decomposition yielding 90,431,488 terms (N=150), 88 MiB at 15 qubits
+  (321,941,504 terms, N=200) and 122 MiB at 16 qubits
+  (1,457,121,280 terms, N=300).
   An implementation requiring the caller to hold the dense
   $2^n \times 2^n$ operator needs 4 GiB, 16 GiB and 64 GiB
   respectively for the same three sizes.
@@ -302,7 +303,7 @@ whole-package correctness evidence is under **Correctness** below):
 
 - **Exhaustive projection.** Every term of a decomposition is checked
   individually against an independently derived projection oracle —
-  not sampled — up to 91,652,096 terms at 14 qubits. The oracle
+  not sampled — up to 90,431,488 terms at 14 qubits. The oracle
   computes $\operatorname{Tr}(H P^{\dagger}) / \text{dim}$ directly
   from the projection formula, so it shares no code path with the
   transform it checks. Artifacts and method:
@@ -333,7 +334,7 @@ labels, cache probe), sparsity-aware coefficients, streaming output
 with bounded memory, chunked and parallel execution with cache-aware
 auto-tuning, binary checkpoint/restart (including CLI `--write-chunks`),
 opt-in CLI `--progress`, GNU-style CLI help, runtime-estimate guidance
-for hour-scale sparse runs, and exhaustive verification to 91,652,096
+for hour-scale sparse runs, and exhaustive verification to 90,431,488
 terms at 14 qubits.
 
 Known gaps:

@@ -196,7 +196,7 @@ console command wraps the same functionality:
 $ paulikit decompose --n-oscillators 4 --show-terms
 N=4 oscillators, 4 qubits, 16x16 padded Hamiltonian
 Decomposition time: ...
-Nonzero Pauli terms: 56
+Nonzero Pauli terms: 64
   IXII: -0.5470915958155509
   IXIZ: 0.015053558406667805
   IXZI: 0.02983035390312644
@@ -220,10 +220,10 @@ parameters for real work.
 $ paulikit benchmark --n-oscillators 2 4 8 16 30
     N  qubits    dim    terms   time (s)
     2       3      8       12        ...
-    4       4     16       56        ...
-    8       6     64      928        ...
-   16       8    256    15360        ...
-   30       9    512   112384        ...
+    4       4     16       64        ...
+    8       6     64      832        ...
+   16       8    256    14464        ...
+   30       9    512   107008        ...
 ```
 
 (Timings vary run to run and by machine; term counts are the part
@@ -241,7 +241,7 @@ $ paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
       --executor thread
 N=150 oscillators, 14 qubits, 16384x16384 padded Hamiltonian
 Decomposition time (parallel, executor=thread): ...
-Chunks: 5595, nonzero Pauli terms: 91652096
+Chunks: 5520, nonzero Pauli terms: 90431488
 ```
 
 Related flags for the same large-$N$ regime:
@@ -395,7 +395,7 @@ through most of each chunk, so threads serialise *and* add contention.
 Neither choice is right in general, which is why it is decided per
 build.
 
-At N=150 (91.6M terms), peak RSS stays in the same tens-of-MiB range
+At N=150 (90.4M terms), peak RSS stays in the same tens-of-MiB range
 across all three paths (sequential chunked, parallel threads, parallel
 processes), so the choice among them is a throughput question, not a
 memory one. With the compiled kernels present, the parallel-threads
@@ -410,11 +410,14 @@ The streaming design's real payoff is not the constant factor. Peak
 resident memory stays roughly flat as the problem grows, because only
 one chunk is live at a time:
 
-| qubits | terms | peak RSS |
-|---|---|---|
-| 14 | 91,652,096 | 72 MiB |
-| 15 | 326,134,272 | 89 MiB |
-| 16 | 1,470,021,632 | 123 MiB |
+| N | qubits | terms | peak RSS |
+|---|---|---|---|
+| 150 | 14 | 90,431,488 | 72 MiB |
+| 200 | 15 | 321,941,504 | 88 MiB |
+| 300 | 16 | 1,457,121,280 | 122 MiB |
+
+(`paulikit decompose --n-oscillators N --chunk-size 2 --parallel
+--executor thread`, peak resident set of the whole process.)
 
 An implementation that requires the caller to hold the dense
 $2^n \times 2^n$ operator needs 4 GiB at 14 qubits, 16 GiB at 15 and
