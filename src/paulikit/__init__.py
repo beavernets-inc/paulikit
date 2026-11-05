@@ -56,4 +56,4 @@ Reconstruction and checking, from ``paulikit.pauli_utils``:
 decompositions used by the test suite.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"

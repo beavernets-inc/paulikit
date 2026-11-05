@@ -47,7 +47,7 @@ abstract: >-
   checkpoint format cheap enough to leave permanently enabled,
   cache-aware automatic chunk sizing, and exhaustive per-term
   verification against an independent projection oracle at up to
-  91,652,096 terms.
+  90,431,488 terms.
 keywords:
   - Pauli decomposition
   - fast Walsh-Hadamard transform
@@ -58,13 +58,14 @@ keywords:
   - scientific Python
   - checkpoint and restart
 license: GPL-3.0-or-later
-version: 0.1.3
+version: 0.1.4
 doi: "10.5281/zenodo.22992251"
 identifiers:
   - type: doi
     value: "10.5281/zenodo.22992251"
-    description: "paulikit concept DOI (resolves to latest; version 0.1.3 = 10.5281/zenodo.23009427)"
+    description: "paulikit concept DOI (resolves to latest; 0.1.4 version DOI pending, 0.1.3 = 10.5281/zenodo.23009427)"
 # Concept DOI used as primary cite target (always latest).
+# Version DOI for 0.1.4: update after the 0.1.4 Zenodo software deposit.
 # Version DOI for 0.1.3 archive: 10.5281/zenodo.23009427
 # (doi.org/DataCite registration for recent version DOIs was 404 at publish time;
 #  Zenodo record URLs and concept DOI resolve.)
