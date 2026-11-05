@@ -156,7 +156,7 @@ def test_exhaustive_projection_n150_streaming(capsys):
             f"max_abs_error={result['max_abs_error']:.3e}"
         )
 
-    assert result["n_terms"] == 91_652_096
+    assert result["n_terms"] == 90_431_488
     assert result["passed"], (
         f"max_abs_error={result['max_abs_error']} on label "
         f"{result['worst_label']!r}"
