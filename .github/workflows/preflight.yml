@@ -1,0 +1,31 @@
+name: preflight
+
+# First feedback on every pull request, together with the DCO app.
+# Cheap and fast, needs no approval; the tests wait for a reviewer
+# (see the ci environment in ci.yml).
+on:
+  pull_request: {}
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install nbformat
+        run: python -m pip install nbformat
+
+      - name: Run preflight checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/preflight "$BASE_SHA" "$HEAD_SHA"
