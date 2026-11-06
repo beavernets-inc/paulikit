@@ -13,8 +13,21 @@ import pytest
 cache_probe = pytest.importorskip("paulikit._native.cache_probe")
 
 
+def _probe(**kwargs):
+    # The probe raises RuntimeError on architectures with no known
+    # cycle-counter instruction (s390x, for one); its callers fall back
+    # to declared cache sizes there. That is the documented contract,
+    # not a failure, so the tests have nothing to measure: skip.
+    try:
+        return cache_probe.probe_cache_boundaries(**kwargs)
+    except RuntimeError as exc:
+        if "no hardware cycle-counter" not in str(exc):
+            raise
+        pytest.skip(str(exc))
+
+
 def test_probe_cache_boundaries_returns_doubling_sizes():
-    result = cache_probe.probe_cache_boundaries(
+    result = _probe(
         min_size_bytes=8192, n_sizes=13, reps=50000, repeats=2
     )
     assert len(result) == 13
@@ -23,7 +36,7 @@ def test_probe_cache_boundaries_returns_doubling_sizes():
 
 
 def test_probe_cache_boundaries_cycles_are_positive():
-    result = cache_probe.probe_cache_boundaries(
+    result = _probe(
         min_size_bytes=8192, n_sizes=5, reps=50000, repeats=2
     )
     for size, cycles in result:
@@ -36,7 +49,7 @@ def test_probe_cache_boundaries_small_sizes_are_faster_than_large():
     # level, not a smooth ramp) - just checks the smallest measured
     # size is meaningfully faster than a size well past L3, which
     # should hold on any real cache hierarchy.
-    result = cache_probe.probe_cache_boundaries(
+    result = _probe(
         min_size_bytes=8192, n_sizes=13, reps=100000, repeats=3
     )
     smallest_cycles = result[0][1]
@@ -68,7 +81,7 @@ def test_probe_cache_boundaries_repeats_reduces_or_matches_noise():
     # a smoke test, not a strict statistical claim - real hardware
     # noise (a found-and-fixed preemption outlier issue in this same
     # probe) cannot be fully eliminated in a unit test.
-    result = cache_probe.probe_cache_boundaries(
+    result = _probe(
         min_size_bytes=8192, n_sizes=3, reps=50000, repeats=5
     )
     assert len(result) == 3
