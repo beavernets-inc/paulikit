@@ -1,0 +1,146 @@
+name: ci
+
+# The test suite, in one workflow with one approval per push.
+#
+#   approve    waits for a reviewer to approve the `ci` environment;
+#              pull requests only
+#   test       pytest on Python 3.10-3.13 Linux, plus macOS and
+#              Windows on 3.12
+#   ci-result  always runs; passes only if every needed job passed or
+#              was skipped. This is the check branch protection
+#              requires.
+#
+# Linux and macOS build the native extension as REQUIRED
+# (-Dnative=enabled, plus wht_kernel and cache_probe), so a green tick
+# cannot silently mean "fallback only". Windows keeps the default
+# (auto) so the documented pure-Python fallback stays tested.
+#
+# Scheduled weekly on main, because the tests install current
+# dependency releases and can break with no pull request at all.
+# Scheduled and manual runs need no approval: they run code already
+# on a branch of this repository.
+on:
+  pull_request: {}
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes a run still waiting for approval.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  approve:
+    # "Review deployments" on the run page, select ci, approve.
+    name: reviewer approval
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment: ci
+    steps:
+      - run: echo "CI approved for ${{ github.sha }}"
+
+  test:
+    name: "py${{ matrix.python-version }} / ${{ matrix.os }}"
+    needs: approve
+    if: >-
+      !cancelled() &&
+      (needs.approve.result == 'success' ||
+       (github.event_name != 'pull_request' &&
+        needs.approve.result == 'skipped'))
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # CPU pinning and topology detection are Linux-only
+          # (sched_setaffinity, /sys/devices/system/cpu); macOS and
+          # Windows test the degraded-but-correct paths. Windows also
+          # has no oneTBB here and keeps the native=auto default.
+          - os: macos-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.12"
+    env:
+      # "enabled" fails the build if a compiled kernel cannot be
+      # built; Windows keeps "auto" and may fall back to pure Python.
+      NATIVE: ${{ matrix.os == 'windows-latest' && 'auto' || 'enabled' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install oneTBB (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libtbb-dev
+
+      - name: Install oneTBB (macOS)
+        if: runner.os == 'macOS'
+        run: brew install tbb
+
+      - name: Install build dependencies
+        # Installed first and separately so the editable install can
+        # use --no-build-isolation: meson-python bakes NumPy's include
+        # path into the rebuild hook, and with build isolation that
+        # path points into a throwaway environment that is deleted
+        # immediately afterwards.
+        run: >-
+          python -m pip install --upgrade
+          pip numpy meson-python cython ninja
+
+      - name: Install paulikit with test extras
+        shell: bash
+        run: >-
+          pip install -e ".[test]" --no-build-isolation
+          -Csetup-args=-Dnative="$NATIVE"
+          -Csetup-args=-Dwht_kernel="$NATIVE"
+          -Csetup-args=-Dcache_probe="$NATIVE"
+
+      - name: Run the test suite
+        # -m 'not slow' matches pyproject's default addopts; the slow
+        # marker covers reference comparisons that take minutes.
+        run: pytest -v -m "not slow"
+
+      - name: Report whether the native extension was built
+        # On Linux and macOS the install above already failed if the
+        # extension could not be built; on Windows this records which
+        # path the run actually exercised.
+        shell: bash
+        run: |
+          python - <<'PY'
+          try:
+              from paulikit._native import pauli_label_native  # noqa: F401
+              print("native extension: BUILT")
+          except ImportError as exc:
+              print(f"native extension: FALLBACK ({exc})")
+          PY
+
+  ci-result:
+    name: ci-result
+    needs: [approve, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: >-
+            approve=${{ needs.approve.result }}
+            test=${{ needs.test.result }}
+        run: |
+          status=0
+          for r in $RESULTS; do
+            echo "$r"
+            case "${r#*=}" in
+              success|skipped) ;;
+              *) status=1 ;;
+            esac
+          done
+          exit "$status"
