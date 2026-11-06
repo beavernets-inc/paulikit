@@ -261,7 +261,9 @@ pytest
 (from this directory; `pyproject.toml` sets `testpaths = ["tests"]`
 and skips `@pytest.mark.slow` by default. The package must be
 installed — `pip install -e ".[test]"` — for imports to resolve).
-323 default tests; 8 further slow benchmark comparisons.
+356 default tests with the native extension built (fewer without
+it: tests of compiled kernels skip); 8 further slow benchmark
+comparisons.
 
 
 ## Algorithms implemented
@@ -312,7 +314,7 @@ whole-package correctness evidence is under **Correctness** below):
   within tolerance. PennyLane is an optional reference dependency (the
   `reference` extra, not installed by CI) and is never imported by
   `paulikit.algorithms`.
-- **Regression suite.** 323 default tests (8 further slow benchmark
+- **Regression suite.** 356 default tests (8 further slow benchmark
   comparisons excluded by default), including crash-recovery and
   checkpoint-format cases.
 
