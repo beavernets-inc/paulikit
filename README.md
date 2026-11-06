@@ -111,11 +111,10 @@ pip install -e ".[dev]" --no-build-isolation
 ```
 
 See [`docs/installation.md`](docs/installation.md) for editable-install
-sequencing and how to force the native extensions on or off. Canonical
-development is on
-[Codeberg](https://codeberg.org/beavernets/paulikit); a
-[GitHub mirror](https://github.com/beavernets-inc/paulikit) runs the
-manylinux wheel workflow.
+sequencing and how to force the native extensions on or off.
+Development, pull requests and CI are on
+[GitHub](https://github.com/beavernets-inc/paulikit);
+[Codeberg](https://codeberg.org/beavernets/paulikit) mirrors `main`.
 
 
 ## Usage
@@ -343,11 +342,12 @@ Known gaps:
   ship `wht_kernel`, `cache_probe`, and serial `pauli_label_native`.
   The optional oneTBB parallel label module is not in the wheel.
   macOS, Windows, and musllinux are not wheel targets — use the sdist
-  / from-source build there. Wheel CI runs on the GitHub mirror
-  ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit));
-  Codeberg is the canonical tree.
+  / from-source build there. Wheel CI runs on GitHub
+  ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit)),
+  where development and pull requests happen; Codeberg mirrors `main`
+  (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - CPU pinning and topology detection are Linux-only, with a documented
-  fallback elsewhere; the non-Linux paths are not yet exercised in CI.
+  fallback elsewhere; CI runs the test suite on macOS and Windows too.
 
 
 ## License
