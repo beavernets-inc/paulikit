@@ -128,6 +128,18 @@ summarises the run and is the one required for merging.
 The full matrix also runs weekly on `main`, to catch breakage from new
 releases of unpinned dependencies.
 
+A second workflow, `.github/workflows/extended.yml`, covers platforms
+that are too slow or too fragile to gate every pull request: Fedora,
+Debian testing and Alpine (musl) containers, FreeBSD, big-endian
+s390x under QEMU emulation, Python 3.14, and the oldest NumPy and
+SciPy that `pyproject.toml` declares. It runs weekly and is **not
+required for merging**; the `ci-result` check does not include it.
+The s390x job is allowed to fail. Run it on demand from the Actions
+tab ("extended", "Run workflow") or with
+`gh workflow run extended.yml`. It also runs on a pull request that
+changes the workflow or its scripts, behind the same `ci` approval,
+so such a change is checked before it merges.
+
 Third-party actions are pinned to a full commit SHA with the version
 in a comment. Update the SHA and the comment together.
 
