@@ -725,8 +725,17 @@ def _iter_checkpoint_frames(
             z = np.frombuffer(
                 payload, dtype=idx_dtype, count=n_terms, offset=idx_nbytes
             )
-            coeff = np.frombuffer(
-                payload, dtype=complex, count=n_terms, offset=2 * idx_nbytes
+            # With 2- or 4-byte indices and an odd term count the
+            # coefficients start at an offset that is not a multiple of
+            # 8, and frombuffer would yield an unaligned complex array;
+            # native code reads it as double *. np.require copies only
+            # in that case.
+            coeff = np.require(
+                np.frombuffer(
+                    payload, dtype=complex, count=n_terms,
+                    offset=2 * idx_nbytes,
+                ),
+                requirements=["C", "A"],
             )
             yield chunk_index, x, z, coeff
 
@@ -1686,7 +1695,8 @@ def _check_hermitian_violation(
     input-dependent saving on top of the pass-count reduction.
     """
     if _hermitian_check_native is not None:
-        contiguous = np.ascontiguousarray(coefficient_values)
+        # Contiguous AND aligned: the C kernel reads const double *.
+        contiguous = np.require(coefficient_values, requirements=["C", "A"])
         first_violation = _hermitian_check_native.first_hermitian_violation(
             contiguous, atol
         )
