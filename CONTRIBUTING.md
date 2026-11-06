@@ -107,7 +107,9 @@ Two checks give first feedback as soon as a pull request is opened:
 The test matrix (`.github/workflows/ci.yml`) is Python 3.10-3.13 on
 Linux, plus macOS and Windows on 3.12. Linux and macOS build with
 `-Dnative=enabled`, so the compiled kernels must build there; Windows
-keeps the default, so the pure-Python fallback stays tested.
+builds with the native options disabled, so the pure-Python fallback
+stays tested. The last step of each job fails if the native extension
+was built when it should not have been, or the reverse.
 
 The tests do not start on their own: a member of the organisation's
 `reviewers` team approves each run on the workflow run page, "Review
