@@ -6,18 +6,15 @@ with it.
 
 ## Where the project lives
 
-**Canonical repository:**
+Development happens on GitHub, at
+[github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit):
+pull requests and issues go there, where the checks described under
+[Review and CI](#review-and-ci) run. GitHub also hosts the wheel CI,
+because manylinux builds need GitHub-hosted runners with Docker, which
+Codeberg's hosted Forgejo Actions runners are not sized for.
+
 [codeberg.org/beavernets/paulikit](https://codeberg.org/beavernets/paulikit)
-(`origin`).
-
-**Mirror:**
-[github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit)
-(`github`).
-
-Issues and pull requests are welcome at either. Prefer Codeberg when
-you have a choice; the GitHub remote exists so Linux wheel CI can use
-GitHub-hosted runners with Docker (manylinux), which Codeberg's
-hosted Forgejo Actions runners are not sized for.
+is a mirror of `main`.
 
 ## Building
 
@@ -79,9 +76,42 @@ Windows are intentionally not wheel targets; those platforms use the
 sdist and documented fallbacks. Wheels ship serial `pauli_label_native`
 only (no oneTBB parallel fill).
 
-Codeberg remains the source of truth for the tree. Do not expect the
-same cibuildwheel matrix to run on Codeberg's hosted Actions without
-a self-hosted runner that can drive Docker.
+Do not expect the same cibuildwheel matrix to run on Codeberg's hosted
+Actions without a self-hosted runner that can drive Docker.
+
+## Review and CI
+
+Every change, including the maintainers' own, goes through a pull
+request, and every commit carries a `Signed-off-by:` line matching the
+commit's author email (`git commit -s`), certifying the
+[Developer Certificate of Origin](https://developercertificate.org/).
+Two checks give first feedback as soon as a pull request is opened:
+
+- **DCO** - every commit carries a matching `Signed-off-by:` line.
+- **preflight** (`.github/scripts/preflight`) - commit messages carry
+  no AI-tool attribution lines, added lines contain no machine-local
+  details (local proxy commands or addresses), no internal planning
+  documents (`plans/`, `superpowers/`) are added, touched shell
+  scripts pass `shellcheck -S warning`, and touched notebooks are
+  valid nbformat documents. Run it locally before pushing (the
+  notebook check needs `nbformat`):
+  ```bash
+  .github/scripts/preflight origin/main HEAD
+  ```
+
+The test matrix (`.github/workflows/ci.yml`) is Python 3.10-3.13 on
+Linux, plus macOS and Windows on 3.12. Linux and macOS build with
+`-Dnative=enabled`, so the compiled kernels must build there; Windows
+keeps the default, so the pure-Python fallback stays tested.
+
+The tests do not start on their own: a member of the organisation's
+`reviewers` team approves each run on the workflow run page, "Review
+deployments", select `ci`, "Approve and deploy". Pushing new commits
+starts a new run that needs approval again. The `ci-result` check
+summarises the run and is the one required for merging.
+
+The full matrix also runs weekly on `main`, to catch breakage from new
+releases of unpinned dependencies.
 
 ## What a change should carry
 
