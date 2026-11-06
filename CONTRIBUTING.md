@@ -104,12 +104,20 @@ Two checks give first feedback as soon as a pull request is opened:
   .github/scripts/preflight origin/main HEAD
   ```
 
-The test matrix (`.github/workflows/ci.yml`) is Python 3.10-3.13 on
-Linux, plus macOS and Windows on 3.12. Linux and macOS build with
-`-Dnative=enabled`, so the compiled kernels must build there; Windows
-builds with the native options disabled, so the pure-Python fallback
-stays tested. The last step of each job fails if the native extension
-was built when it should not have been, or the reverse.
+The test matrix (`.github/workflows/ci.yml`) runs on every pull
+request: Python 3.10-3.13 on Linux x86_64, plus Python 3.12 on Linux
+ARM64, macOS (Apple silicon and Intel) and Windows. Linux and macOS
+build with `-Dnative=enabled`, so the compiled kernels must build
+there; Windows builds with the native options disabled, so the
+pure-Python fallback stays tested. The last step of each job fails if
+the native extension was built when it should not have been, or the
+reverse. One further job builds the extension with AddressSanitizer
+and UndefinedBehaviorSanitizer and runs the non-slow suite under
+them; a sanitizer report fails the job. To reproduce it locally,
+build with `-Csetup-args=-Db_sanitize=address,undefined
+-Csetup-args=-Db_lundef=false` and run pytest with
+`LD_PRELOAD="$(gcc -print-file-name=libasan.so)"`,
+`ASAN_OPTIONS=detect_leaks=0` and `pytest -s`.
 
 The tests do not start on their own: a member of the organisation's
 `reviewers` team approves each run on the workflow run page, "Review
@@ -119,6 +127,9 @@ summarises the run and is the one required for merging.
 
 The full matrix also runs weekly on `main`, to catch breakage from new
 releases of unpinned dependencies.
+
+Third-party actions are pinned to a full commit SHA with the version
+in a comment. Update the SHA and the comment together.
 
 ## What a change should carry
 
