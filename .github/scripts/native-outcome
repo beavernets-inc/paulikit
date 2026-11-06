@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Report whether paulikit's native extension was built.
+
+Used by the jobs in extended.yml. EXPECT selects the check:
+
+  BUILT     fail unless the extension imports (native is required)
+  FALLBACK  fail unless it does not (the pure-Python path is under test)
+  any       report only; the job passes either way
+
+EXPECT_BYTEORDER ("little" or "big"), if set, must match the
+interpreter's, so an emulated big-endian job cannot silently run on
+the wrong architecture.
+"""
+
+import os
+import platform
+import sys
+
+try:
+    from paulikit._native import pauli_label_native  # noqa: F401
+
+    outcome = "BUILT"
+    detail = ""
+except ImportError as exc:
+    outcome = "FALLBACK"
+    detail = f" ({exc})"
+
+expected = os.environ.get("EXPECT", "any")
+print(
+    f"platform: {platform.system()} {platform.machine()}, "
+    f"{sys.byteorder}-endian, Python {platform.python_version()}"
+)
+print(f"native extension: {outcome}{detail}; expected {expected}")
+
+status = 0
+if expected in ("BUILT", "FALLBACK") and outcome != expected:
+    print(f"error: got {outcome}, expected {expected}", file=sys.stderr)
+    status = 1
+
+want_order = os.environ.get("EXPECT_BYTEORDER")
+if want_order and sys.byteorder != want_order:
+    print(
+        f"error: byte order is {sys.byteorder}, expected {want_order}",
+        file=sys.stderr,
+    )
+    status = 1
+
+sys.exit(status)

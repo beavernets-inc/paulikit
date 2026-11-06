@@ -1,0 +1,22 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Build paulikit and run the non-slow suite inside the FreeBSD VM of
+# extended.yml, using the system's packages for everything. Run from
+# the checkout root as root. EXPECT is passed to native-outcome.
+set -eu
+
+pkg install -y python3 pkgconf ninja meson onetbb
+pyv=$(python3 -c 'import sys; print("%d%d" % sys.version_info[:2])')
+pkg install -y "py${pyv}-numpy" "py${pyv}-scipy" "py${pyv}-pytest" \
+    "py${pyv}-cython" "py${pyv}-meson-python" "py${pyv}-pip"
+
+python3 -m venv --system-site-packages /tmp/venv
+PATH=/tmp/venv/bin:$PATH
+export PATH
+python -m pip install -e ".[test]" --no-build-isolation
+
+rc=0
+python -m pytest -v -m "not slow" || rc=$?
+python .github/scripts/native-outcome || rc=$?
+exit "$rc"
