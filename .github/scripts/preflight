@@ -34,6 +34,18 @@ for c in $(git rev-list "$base..$head" --); do
     fi
 done
 
+# 1b. Every commit message says how the change was verified: a line
+# starting with "Verified:" (what was checked, and what was not; see
+# CONTRIBUTING.md). Only presence is checked; reviewers judge content.
+for c in $(git rev-list "$base..$head" --); do
+    if ! git log -1 --format=%B "$c" | grep -q '^Verified:'; then
+        fail "commit $(git rev-parse --short "$c") ($(git log -1 \
+--format=%s "$c")): no 'Verified:' paragraph. Add one saying what \
+was checked and what was not (git commit --amend, or rebase to \
+reword), see CONTRIBUTING.md"
+    fi
+done
+
 # 2. No local-environment details in added lines. Written as bracket
 # expressions so this file does not match its own patterns.
 env_re='proxy[c]hains|127[.]0[.]0[.]1:1080'

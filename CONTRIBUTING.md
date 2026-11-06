@@ -94,7 +94,8 @@ Two checks give first feedback as soon as a pull request is opened:
 
 - **DCO** - every commit carries a matching `Signed-off-by:` line.
 - **preflight** (`.github/scripts/preflight`) - commit messages carry
-  no AI-tool attribution lines, added lines contain no machine-local
+  no AI-tool attribution lines and each has a `Verified:` paragraph
+  (see "Commit messages" below), added lines contain no machine-local
   details (local proxy commands or addresses), no internal planning
   documents (`plans/`, `superpowers/`) are added, touched shell
   scripts pass `shellcheck -S warning`, and touched notebooks are
@@ -172,6 +173,19 @@ at 79, and new code should follow the file it lives in.
 Commit messages follow the GNU convention: a short imperative subject
 line, a blank line, then a body explaining *why* the change is being
 made, wrapped at 72 characters. The existing history is the reference.
+
+Every commit also needs a paragraph starting with `Verified:`, before
+the `Signed-off-by:` line (the preflight check fails without one). Say
+what you actually checked, with numbers where there are any, and what
+you did not check, for example:
+
+```
+Verified: the test suite passes on Python 3.12 (356 passed, native
+extensions built). Not run on macOS or Windows.
+```
+
+For a typo fix, `Verified: rendered the page; no code changed.` is
+enough. A bare `Verified: n/a` will be sent back in review.
 
 ## Reporting a bug
 
