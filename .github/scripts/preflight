@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Fast first-feedback checks on a pull request, run before a reviewer
+# approves the full CI matrix. Usable locally too:
+#
+#   .github/scripts/preflight <base-ref> <head-ref>
+#
+# Checks only what the pull request adds (commits, added lines, touched
+# files), never the existing tree. Exits non-zero if any check fails.
+set -euo pipefail
+
+if [ $# -ne 2 ]; then
+    echo "usage: $0 <base-ref> <head-ref>" >&2
+    exit 2
+fi
+base=$(git merge-base "$1" "$2")
+head=$2
+status=0
+
+fail() {
+    echo "::error::$*"
+    status=1
+}
+
+echo "== commits $base..$head"
+git log --format='  %h %s' "$base..$head" --
+
+# 1. No AI-tool attribution in commit messages.
+ai_re='co-authored-by:.*(claude|anthropic|copilot|chatgpt|openai)'
+ai_re="$ai_re|generated (with|by) .*(claude|copilot|chatgpt)"
+ai_re="$ai_re|noreply@anthropic\.com"
+for c in $(git rev-list "$base..$head" --); do
+    if git log -1 --format=%B "$c" | grep -Eiq "$ai_re"; then
+        fail "commit $(git rev-parse --short "$c"): AI attribution line"
+    fi
+done
+
+# 2. No local-environment details in added lines. Written as bracket
+# expressions so this file does not match its own patterns.
+env_re='proxy[c]hains|127[.]0[.]0[.]1:1080'
+hits=$(git diff -U0 "$base" "$head" -- \
+    | grep -E '^\+[^+]' | grep -Ei "$env_re" || true)
+if [ -n "$hits" ]; then
+    fail "local environment details in added lines:"
+    echo "$hits"
+fi
+
+# 3. No internal planning documents.
+touched=$(git diff --name-only --diff-filter=AMR \
+    "$base" "$head" --)
+internal=$(printf '%s\n' "$touched" \
+    | grep -E '(^|/)superpowers/|^plans/' || true)
+if [ -n "$internal" ]; then
+    fail "internal planning documents must not be committed:"
+    echo "$internal"
+fi
+
+# Contents of touched files come from <head-ref>, not the working
+# tree, so the result does not depend on what is checked out.
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# 4. shellcheck on touched shell scripts (by shebang, any extension).
+scripts=()
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    if git show "$head:$f" 2>/dev/null | head -n1 \
+        | grep -Eq '^#!.*\b(ba|da|k)?sh\b'; then
+        mkdir -p "$tmp/$(dirname "$f")"
+        git show "$head:$f" > "$tmp/$f"
+        scripts+=("$f")
+    fi
+done <<< "$touched"
+if [ ${#scripts[@]} -gt 0 ]; then
+    echo "== shellcheck: ${scripts[*]}"
+    (cd "$tmp" && shellcheck -S warning "${scripts[@]}") \
+        || fail "shellcheck reported warnings"
+fi
+
+# 5. Touched notebooks are valid nbformat documents (needs nbformat).
+notebooks=()
+while IFS= read -r f; do
+    case "$f" in
+        *.ipynb)
+            mkdir -p "$tmp/$(dirname "$f")"
+            git show "$head:$f" > "$tmp/$f"
+            notebooks+=("$f") ;;
+    esac
+done <<< "$touched"
+if [ ${#notebooks[@]} -gt 0 ]; then
+    echo "== nbformat: ${notebooks[*]}"
+    (cd "$tmp" && python3 - "${notebooks[@]}" <<'PY') \
+        || fail "invalid notebook structure"
+import sys
+
+import nbformat
+
+bad = 0
+for path in sys.argv[1:]:
+    try:
+        nbformat.validate(nbformat.read(path, as_version=4))
+    except Exception as exc:  # report every notebook, not just one
+        print(f"{path}: {exc}")
+        bad = 1
+sys.exit(bad)
+PY
+fi
+
+if [ "$status" -eq 0 ]; then
+    echo "preflight: all checks passed"
+fi
+exit "$status"
