@@ -70,8 +70,13 @@ sparse = [
 ]
 test = [
     "pytest>=7",
-    "pennylane>=0.35",
     "scipy>=1.10",
+]
+# Cross-checks against PennyLane's qml.pauli_decompose. Kept out of
+# `test` so CI neither installs nor runs it; the tests that use it
+# importorskip, so they skip cleanly without it. `dev` includes it.
+reference = [
+    "pennylane>=0.35",
 ]
 dev = [
     "pytest>=7",

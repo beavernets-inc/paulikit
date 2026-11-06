@@ -10,7 +10,7 @@ minutes; run explicitly with:
 
     pytest tests/test_benchmark_reference.py -m slow -s
 
-Requires the `test` extra (PennyLane) to be installed.
+Requires the `reference` extra (PennyLane) to be installed.
 
 Why this exists: an earlier baseline comparison used a synthetic
 tridiagonal-band sparse matrix as a stand-in for "the real

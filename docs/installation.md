@@ -67,15 +67,16 @@ env for you the way it normally would. A regular, non-editable
 With test/profiling dependencies:
 
 ```bash
-pip install -e ".[test]" --no-build-isolation   # pytest, PennyLane (for fixture regeneration/reference checks), scipy
-pip install -e ".[dev]" --no-build-isolation    # the above, plus Cython and ruff
+pip install -e ".[test]" --no-build-isolation   # pytest, scipy (what CI installs)
+pip install -e ".[reference]" --no-build-isolation  # PennyLane, for fixture regeneration and the PennyLane comparisons
+pip install -e ".[dev]" --no-build-isolation    # test and reference, plus Cython and ruff
 pip install -e ".[docs]" --no-build-isolation   # Sphinx / Furo / MyST stack for `make docs`
 pip install -e ".[sparse]" --no-build-isolation # just scipy, for build_hamiltonian(sparse=True) / pad_to_power_of_two(sparse=True)
 ```
 
 Requires Python >= 3.10. Runtime dependencies are just `numpy` — the
 core algorithms have no dependency on PennyLane, Qiskit, or Classiq;
-those are only used in the `test`/`dev` extras, for generating and
+those are only used in the `reference`/`dev` extras, for generating and
 cross-checking correctness fixtures. `scipy` is likewise optional:
 only needed for the `sparse=True` path on `build_hamiltonian`,
 `pad_to_power_of_two`, and (as an input type)
