@@ -9,6 +9,8 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
 ### Added
 
 - **Out-of-core dense input.** Stream a dense operator from disk without
@@ -255,7 +257,8 @@ uploaded artifacts.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
 
-[Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.1.4...HEAD
+[Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.2.0...HEAD
+[0.2.0]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.2.0
 [0.1.4]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.4
 [0.1.3]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.3
 [0.1.2]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.2

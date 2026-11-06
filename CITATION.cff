@@ -43,7 +43,8 @@ abstract: >-
   The transform itself is established practice; the contribution here
   is making it usable at scale - a streaming formulation whose peak
   resident memory is bounded independently of the term count,
-  multi-core execution over independent chunks, a chunk-framed binary
+  multi-core execution over independent chunks, out-of-core input for
+  dense matrices larger than memory, a chunk-framed binary
   checkpoint format cheap enough to leave permanently enabled,
   cache-aware automatic chunk sizing, and exhaustive per-term
   verification against an independent projection oracle at up to
@@ -58,13 +59,14 @@ keywords:
   - scientific Python
   - checkpoint and restart
 license: GPL-3.0-or-later
-version: 0.1.4
+version: 0.2.0
 doi: "10.5281/zenodo.22992251"
 identifiers:
   - type: doi
     value: "10.5281/zenodo.22992251"
-    description: "paulikit concept DOI (resolves to latest; version 0.1.4 = 10.5281/zenodo.23972284, 0.1.3 = 10.5281/zenodo.23009427)"
+    description: "paulikit concept DOI (resolves to latest; 0.2.0 version DOI pending, 0.1.4 = 10.5281/zenodo.23972284, 0.1.3 = 10.5281/zenodo.23009427)"
 # Concept DOI used as primary cite target (always latest).
+# Version DOI for 0.2.0: update after the 0.2.0 Zenodo software deposit.
 # Version DOI for 0.1.4 archive: 10.5281/zenodo.23972284
 # Version DOI for 0.1.3 archive: 10.5281/zenodo.23009427
 # (doi.org/DataCite registration for recent version DOIs was 404 at publish time;
