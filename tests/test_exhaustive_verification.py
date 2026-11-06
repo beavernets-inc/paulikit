@@ -98,7 +98,10 @@ def test_dual_oracle_agrees_with_pennylane(n_oscillators):
     proj_result = verify_terms(sp.csr_matrix(padded), terms)
     assert proj_result["passed"]
 
-    pl_result = qml.pauli_decompose(sp.csr_matrix(padded))
+    # Dense input on purpose: on Python 3.10 with PennyLane 0.42,
+    # pauli_decompose fails on a scipy sparse matrix (autoray has no
+    # 'gather' for the scipy backend). padded is already dense.
+    pl_result = qml.pauli_decompose(padded)
     pl_coeffs, pl_ops = pl_result.terms()
     pl_terms = {}
     for coeff, op in zip(pl_coeffs, pl_ops):
