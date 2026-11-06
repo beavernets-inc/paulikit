@@ -12,8 +12,10 @@ name: ci
 #
 # Linux and macOS build the native extension as REQUIRED
 # (-Dnative=enabled, plus wht_kernel and cache_probe), so a green tick
-# cannot silently mean "fallback only". Windows keeps the default
-# (auto) so the documented pure-Python fallback stays tested.
+# cannot silently mean "fallback only". Windows builds with all three
+# DISABLED so the documented pure-Python fallback stays tested, and
+# the last step of every job fails if the outcome (BUILT or FALLBACK)
+# is not the one the matrix expects.
 #
 # Scheduled weekly on main, because the tests install current
 # dependency releases and can break with no pull request at all.
@@ -57,19 +59,29 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # native: value of the meson feature options native,
+        # wht_kernel and cache_probe ("enabled" fails the build if a
+        # compiled kernel cannot be built; "disabled" builds none).
+        # expect: what the final step must find.
+        native: [enabled]
+        expect: [BUILT]
         include:
           # CPU pinning and topology detection are Linux-only
           # (sched_setaffinity, /sys/devices/system/cpu); macOS and
-          # Windows test the degraded-but-correct paths. Windows also
-          # has no oneTBB here and keeps the native=auto default.
+          # Windows test the degraded-but-correct paths. Windows
+          # also has no oneTBB here and builds no native code, so
+          # the pure-Python fallback is tested on a real platform.
           - os: macos-latest
             python-version: "3.12"
+            native: enabled
+            expect: BUILT
           - os: windows-latest
             python-version: "3.12"
+            native: disabled
+            expect: FALLBACK
     env:
-      # "enabled" fails the build if a compiled kernel cannot be
-      # built; Windows keeps "auto" and may fall back to pure Python.
-      NATIVE: ${{ matrix.os == 'windows-latest' && 'auto' || 'enabled' }}
+      NATIVE: ${{ matrix.native }}
+      EXPECT: ${{ matrix.expect }}
     steps:
       - uses: actions/checkout@v4
 
@@ -111,17 +123,26 @@ jobs:
         run: pytest -v -m "not slow"
 
       - name: Report whether the native extension was built
-        # On Linux and macOS the install above already failed if the
-        # extension could not be built; on Windows this records which
-        # path the run actually exercised.
+        # Fails if the outcome differs from the matrix's `expect`
+        # (BUILT on Linux and macOS, FALLBACK on Windows), so neither
+        # path can silently stop being the one that is tested.
         shell: bash
         run: |
           python - <<'PY'
+          import os
           try:
               from paulikit._native import pauli_label_native  # noqa: F401
-              print("native extension: BUILT")
+              outcome = "BUILT"
+              detail = ""
           except ImportError as exc:
-              print(f"native extension: FALLBACK ({exc})")
+              outcome = "FALLBACK"
+              detail = f" ({exc})"
+          expected = os.environ["EXPECT"]
+          print(f"native extension: {outcome}{detail}; expected {expected}")
+          if outcome != expected:
+              raise SystemExit(
+                  f"native extension: got {outcome}, expected {expected}"
+              )
           PY
 
   ci-result:
