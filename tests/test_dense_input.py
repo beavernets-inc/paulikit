@@ -4,6 +4,7 @@
 """Layout A/B detection, sidecar validation, from_dense_file."""
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +34,7 @@ def _write_layout_a(tmp_path: Path, operator: np.ndarray, *, bad: dict | None = 
         "dim": dim,
         "dtype": "complex128",
         "layout": "row-major",
-        "endianness": "little",
+        "endianness": sys.byteorder,
         "n_qubits": int(dim).bit_length() - 1,
     }
     if bad:
@@ -124,7 +125,7 @@ def test_sidecar_rejects_non_power_of_two_dim(tmp_path: Path):
                 "dim": 6,
                 "dtype": "complex128",
                 "layout": "row-major",
-                "endianness": "little",
+                "endianness": sys.byteorder,
             }
         ),
         encoding="utf-8",
@@ -144,12 +145,23 @@ def test_sidecar_rejects_size_mismatch(tmp_path: Path):
                 "dim": 8,
                 "dtype": "complex128",
                 "layout": "row-major",
-                "endianness": "little",
+                "endianness": sys.byteorder,
             }
         ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="expected"):
+        resolve_dense_file(path)
+
+
+def test_sidecar_rejects_other_byte_order(tmp_path: Path):
+    # v1 reads only files in the host's byte order; a sidecar declaring
+    # the other one is refused rather than silently byte-swapped.
+    other = "big" if sys.byteorder == "little" else "little"
+    path, _ = _write_layout_a(
+        tmp_path, _random_hermitian(2), bad={"endianness": other}
+    )
+    with pytest.raises(ValueError, match="does not match host"):
         resolve_dense_file(path)
 
 
