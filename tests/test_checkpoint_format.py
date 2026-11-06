@@ -235,3 +235,28 @@ def test_resume_memory_is_bounded_by_chunk_not_file(tmp_path):
     assert peak < file_bytes * 0.25, (
         f"resume peak {peak} should be well below file size {file_bytes}"
     )
+
+
+@pytest.mark.parametrize("n_terms", [1, 3, 4])
+def test_replayed_coefficients_are_aligned(tmp_path, n_terms):
+    # With uint16 indices and an odd term count the coefficients start
+    # at a payload offset that is not a multiple of 8. np.frombuffer
+    # then yields an unaligned complex128 array, which the native
+    # Hermiticity check reads as const double * - undefined behaviour
+    # that UBSan reports and strict-alignment CPUs can fault on.
+    from paulikit.algorithms.fwht import (
+        _append_checkpoint_frame,
+        _iter_checkpoint_frames,
+    )
+
+    path = tmp_path / "ckpt.bin"
+    x = np.arange(n_terms, dtype=np.uint16)
+    z = np.arange(n_terms, dtype=np.uint16)[::-1].copy()
+    coeff = (np.arange(n_terms) + 0.25j * np.arange(n_terms)).astype(complex)
+    _append_checkpoint_frame(path, 0, x, z, coeff, np.dtype(np.uint16))
+    ((index, rx, rz, rc),) = list(_iter_checkpoint_frames(path))
+    assert index == 0
+    assert rc.flags.aligned
+    np.testing.assert_array_equal(rx, x)
+    np.testing.assert_array_equal(rz, z)
+    np.testing.assert_array_equal(rc, coeff)
