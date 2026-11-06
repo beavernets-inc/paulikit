@@ -309,8 +309,9 @@ whole-package correctness evidence is under **Correctness** below):
   [`verification/`](https://codeberg.org/beavernets/paulikit/src/branch/main/verification).
 - **Cross-implementation.** Where PennyLane's `qml.pauli_decompose`
   can also run, both agree exactly on term count and on coefficients
-  within tolerance. PennyLane is a test-only dependency and is never
-  imported by `paulikit.algorithms`.
+  within tolerance. PennyLane is an optional reference dependency (the
+  `reference` extra, not installed by CI) and is never imported by
+  `paulikit.algorithms`.
 - **Regression suite.** 323 default tests (8 further slow benchmark
   comparisons excluded by default), including crash-recovery and
   checkpoint-format cases.

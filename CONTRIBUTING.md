@@ -54,6 +54,11 @@ that rather than adding to it:
 pytest -o addopts="" -m slow
 ```
 
+The PennyLane comparisons are not part of CI. To run them locally,
+install the `reference` extra (`pip install -e ".[reference]"
+--no-build-isolation`); without it those tests skip. The slow
+`tests/test_benchmark_reference.py` also needs it.
+
 The suite passes with no compiled extensions and no development
 dependencies installed - a few tests skip in that configuration, which
 is deliberate. That is the same environment the pure-Python fallback
