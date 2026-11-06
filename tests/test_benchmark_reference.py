@@ -27,7 +27,6 @@ import time
 
 import numpy as np
 import pytest
-import scipy.sparse as sp
 
 from paulikit.algorithms.fwht import fwht_pauli_terms
 from paulikit.hamiltonian import build_hamiltonian, pad_to_power_of_two
@@ -66,9 +65,10 @@ def test_paulikit_vs_pennylane_on_matched_hamiltonian(n_oscillators, capsys):
     paulikit_terms = fwht_pauli_terms(padded)
     paulikit_time = time.perf_counter() - start
 
-    padded_sparse = sp.csr_matrix(padded)
     start = time.perf_counter()
-    pennylane_result = qml.pauli_decompose(padded_sparse)
+    # Dense input: pauli_decompose fails on a scipy sparse matrix on
+    # Python 3.10 with PennyLane 0.42 (autoray has no 'gather').
+    pennylane_result = qml.pauli_decompose(padded)
     pennylane_time = time.perf_counter() - start
     pennylane_coeffs, _ = pennylane_result.terms()
 
